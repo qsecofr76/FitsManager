@@ -1,0 +1,17 @@
+# Ignora file di build e compilazione generati da PyInstaller
+build/
+dist/
+*.spec
+
+# File temporanei Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# FITS di test locale (Stacked12_M 13...)
+*.fit
+*.fits
+
+# File locali di configurazione editor
+.vscode/
+.idea/
