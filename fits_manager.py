@@ -35,10 +35,16 @@ class CurvesWidget(tk.Canvas):
         self.selected_point_idx = None
         self.point_radius = 5
         
+        self.raw_hist_r = None
+        self.raw_hist_g = None
+        self.raw_hist_b = None
+        self.raw_hist_l = None
+        
         self.hist_r = None
         self.hist_g = None
         self.hist_b = None
         self.hist_l = None
+        self.log_scale = True
         
         self.bind("<Button-1>", self.on_click)
         self.bind("<B1-Motion>", self.on_drag)
@@ -90,8 +96,8 @@ class CurvesWidget(tk.Canvas):
             return
             
         h, w, c = base_img.shape
-        if max(h, w) > 150:
-            ratio = 150 / max(h, w)
+        if max(h, w) > 512:
+            ratio = 512 / max(h, w)
             sample = cv2.resize(base_img, (int(w * ratio), int(h * ratio)), interpolation=cv2.INTER_NEAREST)
         else:
             sample = base_img
@@ -102,19 +108,41 @@ class CurvesWidget(tk.Canvas):
         else:
             norm_8u = np.zeros(sample.shape, dtype=np.uint8)
             
-        self.hist_r = cv2.calcHist([norm_8u], [0], None, [256], [0, 256])
-        self.hist_g = cv2.calcHist([norm_8u], [1], None, [256], [0, 256])
-        self.hist_b = cv2.calcHist([norm_8u], [2], None, [256], [0, 256])
+        self.raw_hist_r = cv2.calcHist([norm_8u], [0], None, [256], [0, 256])
+        self.raw_hist_g = cv2.calcHist([norm_8u], [1], None, [256], [0, 256])
+        self.raw_hist_b = cv2.calcHist([norm_8u], [2], None, [256], [0, 256])
         
         lum_8u = (0.2126 * norm_8u[:,:,0] + 0.7152 * norm_8u[:,:,1] + 0.0722 * norm_8u[:,:,2]).astype(np.uint8)
-        self.hist_l = cv2.calcHist([lum_8u], [0], None, [256], [0, 256])
+        self.raw_hist_l = cv2.calcHist([lum_8u], [0], None, [256], [0, 256])
         
-        max_val = max(self.hist_r.max(), self.hist_g.max(), self.hist_b.max(), self.hist_l.max())
+        self.compute_scaled_histograms()
+        
+    def compute_scaled_histograms(self):
+        if self.raw_hist_r is None:
+            return
+            
+        if self.log_scale:
+            hr = np.log1p(self.raw_hist_r)
+            hg = np.log1p(self.raw_hist_g)
+            hb = np.log1p(self.raw_hist_b)
+            hl = np.log1p(self.raw_hist_l)
+        else:
+            hr = self.raw_hist_r.copy()
+            hg = self.raw_hist_g.copy()
+            hb = self.raw_hist_b.copy()
+            hl = self.raw_hist_l.copy()
+            
+        max_val = max(hr.max(), hg.max(), hb.max(), hl.max())
         if max_val > 0:
-            self.hist_r = (self.hist_r / max_val) * 150.0
-            self.hist_g = (self.hist_g / max_val) * 150.0
-            self.hist_b = (self.hist_b / max_val) * 150.0
-            self.hist_l = (self.hist_l / max_val) * 150.0
+            self.hist_r = (hr / max_val) * 150.0
+            self.hist_g = (hg / max_val) * 150.0
+            self.hist_b = (hb / max_val) * 150.0
+            self.hist_l = (hl / max_val) * 150.0
+        else:
+            self.hist_r = np.zeros_like(hr)
+            self.hist_g = np.zeros_like(hg)
+            self.hist_b = np.zeros_like(hb)
+            self.hist_l = np.zeros_like(hl)
             
         self.redraw()
         
@@ -127,18 +155,58 @@ class CurvesWidget(tk.Canvas):
         w = float(self.winfo_width()) if self.winfo_width() > 10 else 220.0
         h = float(self.winfo_height()) if self.winfo_height() > 10 else 220.0
         
-        # 1. Draw Histograms
+        # 1. Draw Histograms in Siril style (transparent filled overlapping polygons)
         if self.hist_r is not None:
-            for channel_hist, color in [(self.hist_r, "#b91c1c"), (self.hist_g, "#047857"), (self.hist_b, "#1d4ed8"), (self.hist_l, "#4b5563")]:
+            hist_img = Image.new("RGBA", (int(w), int(h)), (0, 0, 0, 0))
+            draw = ImageDraw.Draw(hist_img)
+            
+            # Semi-transparent fill colors for R, G, B channels
+            channels = [
+                (self.hist_r, (239, 68, 68, 70)),   # Red
+                (self.hist_g, (16, 185, 129, 70)),  # Green
+                (self.hist_b, (59, 130, 246, 70))   # Blue
+            ]
+            
+            for channel_hist, fill_color in channels:
+                poly_pts = [(0, h)]
+                for vx in range(0, 256):
+                    val = channel_hist[vx][0]
+                    cx = (vx / 255.0) * w
+                    cy = h - (val / 150.0) * (h * 0.85)
+                    poly_pts.append((cx, cy))
+                poly_pts.append((w, h))
+                
+                draw.polygon(poly_pts, fill=fill_color)
+                
+            # Sharp outlines for R, G, B channels
+            outlines = [
+                (self.hist_r, (239, 68, 68, 200)),
+                (self.hist_g, (16, 185, 129, 200)),
+                (self.hist_b, (59, 130, 246, 200))
+            ]
+            for channel_hist, outline_color in outlines:
                 pts = []
                 for vx in range(0, 256):
                     val = channel_hist[vx][0]
                     cx = (vx / 255.0) * w
-                    cy = h - (val / 150.0) * (h * 0.7)
+                    cy = h - (val / 150.0) * (h * 0.85)
                     pts.append((cx, cy))
-                
                 for i in range(len(pts) - 1):
-                    self.create_line(pts[i][0], pts[i][1], pts[i+1][0], pts[i+1][1], fill=color, width=1, tags="hist")
+                    draw.line([pts[i], pts[i+1]], fill=outline_color, width=1)
+                    
+            # Draw Luminance/Gray as a subtle gray outline
+            if self.hist_l is not None:
+                pts_l = []
+                for vx in range(0, 256):
+                    val = self.hist_l[vx][0]
+                    cx = (vx / 255.0) * w
+                    cy = h - (val / 150.0) * (h * 0.85)
+                    pts_l.append((cx, cy))
+                for i in range(len(pts_l) - 1):
+                    draw.line([pts_l[i], pts_l[i+1]], fill=(229, 231, 235, 120), width=1)
+                    
+            self.hist_photo = ImageTk.PhotoImage(hist_img)
+            self.create_image(0, 0, image=self.hist_photo, anchor="nw", tags="hist")
         
         # 2. Draw all 4 curves
         colors_dict = {
@@ -367,6 +435,12 @@ class FitsManagerApp:
         self.annotation_mode = False
         self.annotations = []  # List of dicts: {'x': ratio_x, 'y': ratio_y, 'text': text}
         
+        # Catalog and Photometry attributes
+        self.catalog_stars = []
+        self.show_catalog_stars = tk.BooleanVar(value=False)
+        self.photometry_mode = False
+        self.calib_stars = []
+        
         # UI controls vars
         self.bayer_pattern = tk.StringVar(value="None")
         self.channel_selection = tk.StringVar(value="RGB/Luminance")
@@ -448,7 +522,19 @@ class FitsManagerApp:
         
         # RADEC Mark star button
         btn_mark_radec = tk.Button(toolbar_row2, text="Mark RA/DEC Target", command=self.mark_radec_input, bg="#4f46e5", fg="white", font=("Segoe UI", 9, "bold"), bd=0, padx=12, pady=4)
-        btn_mark_radec.pack(side="left", padx=10)
+        btn_mark_radec.pack(side="left", padx=5)
+        
+        # Catalog stars button
+        self.btn_catalog = tk.Button(toolbar_row2, text="Download Catalog Stars", command=self.download_catalog_stars, bg="#0891b2", fg="white", font=("Segoe UI", 9, "bold"), bd=0, padx=12, pady=4)
+        self.btn_catalog.pack(side="left", padx=5)
+        
+        # Show/Hide Catalog Stars toggle Checkbutton
+        self.chk_show_catalog = tk.Checkbutton(toolbar_row2, text="Show Stars Overlay", variable=self.show_catalog_stars, command=lambda: self.render_canvas(is_dragging=False), bg=self.panel_color, fg=self.text_color, selectcolor=self.control_bg, activebackground=self.panel_color, activeforeground=self.text_color)
+        self.chk_show_catalog.pack(side="left", padx=5)
+        
+        # Photometry button
+        self.btn_photometry = tk.Button(toolbar_row2, text="Photometry Mode: Off", command=self.toggle_photometry_mode, bg="#374151", fg="white", font=("Segoe UI", 9), bd=0, padx=12, pady=4)
+        self.btn_photometry.pack(side="left", padx=5)
         
         # Export Image Button (padded properly to not cut off)
         btn_export = tk.Button(toolbar_row2, text="Export Image", command=self.export_image, bg="#10b981", fg="white", font=("Segoe UI", 10, "bold"), bd=0, padx=16, pady=5)
@@ -468,19 +554,27 @@ class FitsManagerApp:
         main_pane.add(right_panel, minsize=500)
         
         # Scrollable Left Content
-        canvas_left = tk.Canvas(left_panel, bg=self.panel_color, bd=0, highlightthickness=0)
+        canvas_left = tk.Canvas(left_panel, bg=self.panel_color, bd=0, highlightthickness=0, width=320)
         scrollbar_left = tk.Scrollbar(left_panel, orient="vertical", command=canvas_left.yview)
-        scrollable_frame = tk.Frame(canvas_left, bg=self.panel_color)
+        scrollable_frame = tk.Frame(canvas_left, bg=self.panel_color, width=320)
         
+        # Helper to propagate mouse wheel to the canvas_left
+        def on_left_mousewheel(event):
+            canvas_left.yview_scroll(int(-1 * (event.delta / 120)), "units")
+            
         scrollable_frame.bind(
             "<Configure>",
             lambda e: canvas_left.configure(scrollregion=canvas_left.bbox("all"))
         )
-        canvas_left.create_window((0, 0), window=scrollable_frame, anchor="nw")
+        canvas_id = canvas_left.create_window((0, 0), window=scrollable_frame, anchor="nw", width=320)
         canvas_left.configure(yscrollcommand=scrollbar_left.set)
         
-        canvas_left.pack(side="left", fill="both", expand=True)
+        # Bind mousewheel events recursively or directly
+        canvas_left.bind("<MouseWheel>", on_left_mousewheel)
+        scrollable_frame.bind("<MouseWheel>", on_left_mousewheel)
+        
         scrollbar_left.pack(side="right", fill="y")
+        canvas_left.pack(side="left", fill="both", expand=True)
         
         lbl_drag_info = tk.Label(scrollable_frame, text="💡 Tip: Drag & Drop FITS file here to open", bg=self.panel_color, fg="#9ca3af", font=("Segoe UI", 8, "italic"))
         lbl_drag_info.pack(fill="x", padx=10, pady=(5, 0))
@@ -545,6 +639,10 @@ class FitsManagerApp:
         self.var_invert = tk.BooleanVar(value=False)
         self.chk_invert = ttk.Checkbutton(curves_lf, text="Negative Image (Invert)", variable=self.var_invert, command=lambda: self.process_and_update(is_dragging=False))
         self.chk_invert.pack(anchor="w", padx=5, pady=5)
+        
+        self.var_log_hist = tk.BooleanVar(value=True)
+        self.chk_log_hist = ttk.Checkbutton(curves_lf, text="Logarithmic Histogram", variable=self.var_log_hist, command=self.on_log_hist_changed)
+        self.chk_log_hist.pack(anchor="w", padx=5, pady=5)
         
         # Canvas Container Frame (Right Panel) holding Canvas and scrollbars
         canvas_container = tk.Frame(right_panel, bg=self.bg_color)
@@ -738,6 +836,9 @@ class FitsManagerApp:
                 self.fits_data = hdu.data.astype(np.float32)
                 self.debayered_cache = None
                 self.temp_marker = None
+                self.catalog_stars = []
+                self.calib_stars = []
+                self.show_catalog_stars.set(False)
                 
                 self.sky_sample_rgb = None
                 self.star_sample_rgb = None
@@ -860,6 +961,10 @@ class FitsManagerApp:
     def on_curves_changed(self, is_dragging=False):
         self.process_and_update(is_dragging=is_dragging)
 
+    def on_log_hist_changed(self):
+        self.curves_widget.log_scale = self.var_log_hist.get()
+        self.curves_widget.compute_scaled_histograms()
+
     def update_debayer_cache(self):
         if self.fits_data is None:
             return
@@ -940,20 +1045,30 @@ class FitsManagerApp:
             data_norm = (data_norm - black_offset) / denom
             data_norm = np.clip(data_norm, 0.0, 1.0)
             
-        # 2. Convert to uint8
-        img_8u = (data_norm * 255.0).astype(np.uint8)
+        # 2. Convert to uint16 to preserve precision during curve correction
+        img_16u = (data_norm * 65535.0).astype(np.uint16)
         
-        # 3. Apply Multi-Channel Curves
+        # 3. Apply Multi-Channel Curves at 16-bit precision
         lut_rgb = self.curves_widget.get_lut_for_pts(self.curves_widget.points_dict["RGB/Luminance"])
-        img_processed = cv2.LUT(img_8u, lut_rgb)
         
         lut_r = self.curves_widget.get_lut_for_pts(self.curves_widget.points_dict["Red Channel Only"])
         lut_g = self.curves_widget.get_lut_for_pts(self.curves_widget.points_dict["Green Channel Only"])
         lut_b = self.curves_widget.get_lut_for_pts(self.curves_widget.points_dict["Blue Channel Only"])
         
-        img_processed[:, :, 0] = cv2.LUT(img_processed[:, :, 0], lut_r)
-        img_processed[:, :, 1] = cv2.LUT(img_processed[:, :, 1], lut_g)
-        img_processed[:, :, 2] = cv2.LUT(img_processed[:, :, 2], lut_b)
+        # Compose RGB/Luminance curve with channel curves to preserve 16-bit precision mapping
+        lut_r_comb = lut_r[lut_rgb]
+        lut_g_comb = lut_g[lut_rgb]
+        lut_b_comb = lut_b[lut_rgb]
+        
+        # Interpolate the composed 256-point LUTs to 65536 points for mapping the 16-bit image channels to 8-bit
+        lut_r_65536 = np.interp(np.linspace(0, 255, 65536), np.arange(256), lut_r_comb).astype(np.uint8)
+        lut_g_65536 = np.interp(np.linspace(0, 255, 65536), np.arange(256), lut_g_comb).astype(np.uint8)
+        lut_b_65536 = np.interp(np.linspace(0, 255, 65536), np.arange(256), lut_b_comb).astype(np.uint8)
+        
+        img_processed = np.zeros(img_16u.shape, dtype=np.uint8)
+        img_processed[:, :, 0] = lut_r_65536[img_16u[:, :, 0]]
+        img_processed[:, :, 1] = lut_g_65536[img_16u[:, :, 1]]
+        img_processed[:, :, 2] = lut_b_65536[img_16u[:, :, 2]]
         
         # 3b. Convert to Grayscale (B&W) if toggled
         if self.var_grayscale.get():
@@ -977,6 +1092,9 @@ class FitsManagerApp:
             self.processed_img_full = img_processed
             self.processed_img_preview = img_processed
             
+        # Update curves widget histograms with the final processed (stretched) image in real-time
+        self.curves_widget.update_histograms(img_processed)
+        
         self.render_canvas(is_dragging=is_dragging)
 
     def reset_color_manipulation(self):
@@ -1002,44 +1120,184 @@ class FitsManagerApp:
             return
             
         self.push_state()
-        data = self.fits_data
         
-        if data.ndim == 3:
-            lum = 0.2126 * data[:,:,0] + 0.7152 * data[:,:,1] + 0.0722 * data[:,:,2]
-        else:
-            lum = data
+        if self.debayered_cache is None:
+            self.update_debayer_cache()
             
-        median = np.median(lum)
-        mad = np.median(np.abs(lum - median))
+        base_img = self.debayered_cache.copy()
         
-        sigma_black = 2.8
-        sigma_white = 8.0
+        # Normalize exactly as done in process_and_update to ensure identical scales
+        global_min = self.debayered_cache.min()
+        global_max = self.debayered_cache.max()
+        global_range = global_max - global_min if global_max > global_min else 1.0
         
-        black_val = max(lum.min(), median - sigma_black * mad)
-        white_val = min(lum.max(), median + sigma_white * mad)
+        data_norm = (base_img - global_min) / global_range
+        data_norm = np.clip(data_norm, 0.0, 1.0)
         
-        full_min = lum.min()
-        full_max = lum.max()
-        if full_max > full_min:
-            black_idx = int(((black_val - full_min) / (full_max - full_min)) * 255.0)
-            white_idx = int(((white_val - full_min) / (full_max - full_min)) * 255.0)
-        else:
-            black_idx = 0
-            white_idx = 255
+        if self.sky_sample_rgb is not None or self.star_sample_rgb is not None:
+            black_offset = np.array(self.sky_sample_rgb if self.sky_sample_rgb is not None else [0.0, 0.0, 0.0])
+            white_gain = np.array(self.star_sample_rgb if self.star_sample_rgb is not None else [1.0, 1.0, 1.0])
+            denom = white_gain - black_offset
+            denom[denom <= 0.0001] = 0.0001
+            data_norm = (data_norm - black_offset) / denom
+            data_norm = np.clip(data_norm, 0.0, 1.0)
             
-        black_idx = max(0, min(black_idx, 250))
-        white_idx = max(black_idx + 5, min(white_idx, 255))
-        
-        mid_x = int((black_idx + white_idx) * 0.4)
-        mid_y = 140
-        
-        self.curves_widget.points = [
-            (0, 0),
-            (black_idx, 0),
-            (mid_x, mid_y),
-            (white_idx, 255),
-            (255, 255)
-        ]
+        if self.fits_data.ndim == 3:
+            # Color FITS image: calculate stretch parameters separately for Red, Green, and Blue channels
+            # to align peaks (color balance) and dilate each noise bell perfectly.
+            channels = [("Red Channel Only", data_norm[:,:,0]), 
+                        ("Green Channel Only", data_norm[:,:,1]), 
+                        ("Blue Channel Only", data_norm[:,:,2])]
+            
+            for ch_name, chan in channels:
+                median = np.median(chan)
+                mad = np.median(np.abs(chan - median))
+                if mad < 0.0001:
+                    mad = np.std(chan)
+                if mad < 0.0001:
+                    mad = 0.0001
+                
+                # Convert MAD to standard deviation (sigma) of background noise
+                sigma = 1.4826 * mad
+                
+                # Siril default clipping factor
+                shadows_clip_factor = -2.8
+                black_val = max(0.0, median + shadows_clip_factor * sigma)
+                white_val = 1.0
+                target_bg = 0.25
+                
+                range_val = white_val - black_val if white_val > black_val else 1.0
+                median_clipped = max(0.0001, (median - black_val) / range_val)
+                
+                denom = median_clipped * (2.0 * target_bg - 1.0) - target_bg
+                if abs(denom) < 0.0001:
+                    m = 0.0016
+                else:
+                    m = (median_clipped * (target_bg - 1.0)) / denom
+                
+                m = max(0.0001, min(m, 0.9999))
+                
+                black_idx = int(black_val * 255.0)
+                black_idx = max(0, min(black_idx, 240))
+                
+                def eval_mtf(x_val):
+                    if x_val <= black_val:
+                        return 0.0
+                    if x_val >= white_val:
+                        return 1.0
+                    xn = (x_val - black_val) / (white_val - black_val)
+                    num = (m - 1.0) * xn
+                    den = (2.0 * m - 1.0) * xn - m
+                    if abs(den) < 0.0001:
+                        return xn
+                    return num / den
+
+                p1_x = black_val + 0.005 * (white_val - black_val)
+                p1_y = eval_mtf(p1_x)
+                p2_x = black_val + 0.05 * (white_val - black_val)
+                p2_y = eval_mtf(p2_x)
+                p3_x = black_val + 0.35 * (white_val - black_val)
+                p3_y = eval_mtf(p3_x)
+                
+                p1_idx_x = int(p1_x * 255.0)
+                p1_idx_y = int(p1_y * 255.0)
+                p2_idx_x = int(p2_x * 255.0)
+                p2_idx_y = int(p2_y * 255.0)
+                p3_idx_x = int(p3_x * 255.0)
+                p3_idx_y = int(p3_y * 255.0)
+                
+                p1_idx_x = max(black_idx + 1, min(p1_idx_x, 252))
+                p2_idx_x = max(p1_idx_x + 1, min(p2_idx_x, 253))
+                p3_idx_x = max(p2_idx_x + 1, min(p3_idx_x, 254))
+                
+                self.curves_widget.points_dict[ch_name] = [
+                    (0, 0),
+                    (black_idx, 0),
+                    (p1_idx_x, p1_idx_y),
+                    (p2_idx_x, p2_idx_y),
+                    (p3_idx_x, p3_idx_y),
+                    (255, 255)
+                ]
+            
+            # Reset the main RGB/Luminance curve
+            self.curves_widget.points_dict["RGB/Luminance"] = [(0, 0), (255, 255)]
+            
+        else:
+            # Grayscale FITS image: stretch the main RGB/Luminance curve
+            # Since grayscale self.debayered_cache is H x W x 3, use channel 0.
+            chan = data_norm[:,:,0]
+            
+            median = np.median(chan)
+            mad = np.median(np.abs(chan - median))
+            if mad < 0.0001:
+                mad = np.std(chan)
+            if mad < 0.0001:
+                mad = 0.0001
+                
+            sigma = 1.4826 * mad
+            
+            shadows_clip_factor = -2.8
+            black_val = max(0.0, median + shadows_clip_factor * sigma)
+            white_val = 1.0
+            target_bg = 0.25
+            
+            range_val = white_val - black_val if white_val > black_val else 1.0
+            median_clipped = max(0.0001, (median - black_val) / range_val)
+            
+            denom = median_clipped * (2.0 * target_bg - 1.0) - target_bg
+            if abs(denom) < 0.0001:
+                m = 0.0016
+            else:
+                m = (median_clipped * (target_bg - 1.0)) / denom
+            
+            m = max(0.0001, min(m, 0.9999))
+            
+            black_idx = int(black_val * 255.0)
+            black_idx = max(0, min(black_idx, 240))
+            
+            def eval_mtf(x_val):
+                if x_val <= black_val:
+                    return 0.0
+                if x_val >= white_val:
+                    return 1.0
+                xn = (x_val - black_val) / (white_val - black_val)
+                num = (m - 1.0) * xn
+                den = (2.0 * m - 1.0) * xn - m
+                if abs(den) < 0.0001:
+                    return xn
+                return num / den
+
+            p1_x = black_val + 0.005 * (white_val - black_val)
+            p1_y = eval_mtf(p1_x)
+            p2_x = black_val + 0.05 * (white_val - black_val)
+            p2_y = eval_mtf(p2_x)
+            p3_x = black_val + 0.35 * (white_val - black_val)
+            p3_y = eval_mtf(p3_x)
+            
+            p1_idx_x = int(p1_x * 255.0)
+            p1_idx_y = int(p1_y * 255.0)
+            p2_idx_x = int(p2_x * 255.0)
+            p2_idx_y = int(p2_y * 255.0)
+            p3_idx_x = int(p3_x * 255.0)
+            p3_idx_y = int(p3_y * 255.0)
+            
+            p1_idx_x = max(black_idx + 1, min(p1_idx_x, 252))
+            p2_idx_x = max(p1_idx_x + 1, min(p2_idx_x, 253))
+            p3_idx_x = max(p2_idx_x + 1, min(p3_idx_x, 254))
+            
+            self.curves_widget.points_dict["RGB/Luminance"] = [
+                (0, 0),
+                (black_idx, 0),
+                (p1_idx_x, p1_idx_y),
+                (p2_idx_x, p2_idx_y),
+                (p3_idx_x, p3_idx_y),
+                (255, 255)
+            ]
+            # Reset channel curves
+            self.curves_widget.points_dict["Red Channel Only"] = [(0, 0), (255, 255)]
+            self.curves_widget.points_dict["Green Channel Only"] = [(0, 0), (255, 255)]
+            self.curves_widget.points_dict["Blue Channel Only"] = [(0, 0), (255, 255)]
+            
         self.curves_widget.redraw()
         self.process_and_update(is_dragging=False)
 
@@ -1113,6 +1371,55 @@ class FitsManagerApp:
             self.draw_star_crosshair(draw, tx, ty, size=32, width=2)
             draw.text((tx + 34, ty + 34), f"Target: RA={self.temp_marker['ra']}\nDEC={self.temp_marker['dec']}", fill="#f43f5e")
             
+        # 3. Draw Catalog Stars Overlay (cyan circles)
+        if self.show_catalog_stars.get() and self.catalog_stars and self.wcs:
+            h_orig, w_orig = self.debayered_cache.shape[:2]
+            header_epoch = self.fits_header.get('EQUINOX', 2000.0)
+            for star in self.catalog_stars:
+                try:
+                    # Convert to FK5 to match epoch transformation of mark_radec_input
+                    input_coord = SkyCoord(ra=star['ra']*u.deg, dec=star['dec']*u.deg, frame='icrs')
+                    if header_epoch == 2000.0:
+                        target_wcs_coord = input_coord.transform_to(FK5(equinox='J2000'))
+                    else:
+                        target_wcs_coord = input_coord.transform_to(FK5(equinox=self.observation_time))
+                        
+                    px_x, px_y = self.wcs.world_to_pixel(target_wcs_coord)
+                    if 0 <= px_x < w_orig and 0 <= px_y < h_orig:
+                        rx = px_x / w_orig
+                        ry = px_y / h_orig
+                        if self.mirror_horizontal:
+                            rx = 1.0 - rx
+                        if self.mirror_vertical:
+                            ry = 1.0 - ry
+                        sx = int(rx * new_w)
+                        sy = int(ry * new_h)
+                        
+                        r_star = 8
+                        # Cyan outline for catalog stars
+                        draw.ellipse([sx - r_star, sy - r_star, sx + r_star, sy + r_star], outline="#06b6d4", width=1)
+                        draw.text((sx + 10, sy - 8), f"{star['mag']:.2f}", fill="#06b6d4")
+                except Exception:
+                    continue
+                    
+        # 4. Draw Selected Calibration Stars (green circles)
+        if self.show_catalog_stars.get() and self.calib_stars:
+            h_orig, w_orig = self.debayered_cache.shape[:2]
+            for star in self.calib_stars:
+                rx = star['x'] / w_orig
+                ry = star['y'] / h_orig
+                if self.mirror_horizontal:
+                    rx = 1.0 - rx
+                if self.mirror_vertical:
+                    ry = 1.0 - ry
+                sx = int(rx * new_w)
+                sy = int(ry * new_h)
+                
+                r_star = 12
+                # Thicker green circle for calibrated stars
+                draw.ellipse([sx - r_star, sy - r_star, sx + r_star, sy + r_star], outline="#22c55e", width=2)
+                draw.text((sx + 14, sy - 8), "CALIB", fill="#22c55e")
+                
         self.tk_image = ImageTk.PhotoImage(resized_pil)
         
         self.canvas.delete("all")
@@ -1233,6 +1540,23 @@ class FitsManagerApp:
             
         h, w = img_to_draw.shape[:2]
         
+        # Photometry Mode Click Logic
+        if self.photometry_mode and 0 <= canvas_x < self.img_scale_ratio * w and 0 <= canvas_y < self.img_scale_ratio * h:
+            px_x = int(canvas_x / self.img_scale_ratio)
+            px_y = int(canvas_y / self.img_scale_ratio)
+            
+            h_orig, w_orig = self.debayered_cache.shape[:2]
+            px_x = int(px_x * (w_orig / w))
+            px_y = int(px_y * (h_orig / h))
+            
+            if self.mirror_horizontal:
+                px_x = (w_orig - 1) - px_x
+            if self.mirror_vertical:
+                px_y = (h_orig - 1) - px_y
+                
+            self.handle_photometry_click(px_x, px_y)
+            return
+            
         # Color Balance Sampler Point Click Logic
         if self.balance_mode != "None" and 0 <= canvas_x < self.img_scale_ratio * w and 0 <= canvas_y < self.img_scale_ratio * h:
             px_x = int(canvas_x / self.img_scale_ratio)
@@ -1272,27 +1596,27 @@ class FitsManagerApp:
                 if not np.any(valid_mask):
                     valid_mask = np.ones_like(patch_lum, dtype=bool)
                     
-                # Calculate the average values of the channels
+                # Calculate the average values of the channels separately
                 sampled_rgb = np.mean(patch_norm[valid_mask], axis=0)
                 
-                # Proportional calculation on a neutral gray: 
-                # instead of storing individual color channel shifts, we set a neutral gray level
-                # by computing the average luminance of the sampled sky and assigning it evenly to R, G, B.
-                sky_gray_val = 0.2126 * sampled_rgb[0] + 0.7152 * sampled_rgb[1] + 0.0722 * sampled_rgb[2]
+                # Target dark gray level in FITS normalized scale [0..1]
+                dark_gray_target = 0.05
                 
-                # Subtract target scuro (e.g., target background stays at 0.03 / 3%)
-                dark_gray_target = 0.03
-                offset_val = sky_gray_val - dark_gray_target
-                offset_val = max(0.0, min(offset_val, 0.95))
-                
-                # Align R, G, B to exactly the same neutral gray offset
-                offset_rgb = [offset_val, offset_val, offset_val]
+                # Calculate individual channel offsets to align R, G, B peaks exactly at dark_gray_target
+                # Using formula: offset = (sample - target) / (1.0 - target)
+                offset_rgb = []
+                for c in range(3):
+                    val = (sampled_rgb[c] - dark_gray_target) / (1.0 - dark_gray_target)
+                    val = max(-0.5, min(val, 0.95))
+                    offset_rgb.append(float(val))
                 
                 self.sky_sample_rgb = offset_rgb
                 messagebox.showinfo("Color Balance", 
-                                    f"Sky Background calibrated (Neutral Gray offset subtracted):\n"
-                                    f"Red={offset_rgb[0]:.4f}, Green={offset_rgb[1]:.4f}, Blue={offset_rgb[2]:.4f}\n"
-                                    f"(Background calibrated to ~3% neutral dark gray)")
+                                    f"Sky Background calibrated (Neutral Gray offsets applied per channel):\n"
+                                    f"Red offset={offset_rgb[0]:.4f}\n"
+                                    f"Green offset={offset_rgb[1]:.4f}\n"
+                                    f"Blue offset={offset_rgb[2]:.4f}\n"
+                                    f"(Background channels aligned to {dark_gray_target*100:.1f}% neutral dark gray)")
                                     
             elif self.balance_mode == "Star":
                 # White Star: Take brightest pixels in the patch (e.g. top 25% brightest in luminance)
@@ -1436,6 +1760,13 @@ class FitsManagerApp:
                 else:
                     self.fits_data = self.fits_data[start_y:end_y, start_x:end_x]
                     
+                # Slice and update WCS to match the cropped coordinate frame
+                if self.wcs is not None:
+                    try:
+                        self.wcs = self.wcs.slice((slice(start_y, end_y), slice(start_x, end_x)))
+                    except Exception as e:
+                        pass
+                        
                 self.debayered_cache = None
                 self.temp_marker = None
                 self.sky_sample_rgb = None
@@ -1636,6 +1967,323 @@ class FitsManagerApp:
         except Exception as e:
             messagebox.showerror("Error", f"Failed to export image:\n{str(e)}")
 
+    def toggle_photometry_mode(self):
+        if self.fits_data is None:
+            messagebox.showerror("Error", "Load a FITS file first.")
+            return
+            
+        self.photometry_mode = not self.photometry_mode
+        if self.photometry_mode:
+            self.crop_mode = False
+            self.annotation_mode = False
+            self.balance_mode = "None"
+            self.btn_crop.config(text="Crop Mode: Off", bg="#374151")
+            self.btn_annotate.config(text="Annotate Mode: Off", bg="#374151")
+            self.btn_bal_sky.config(bg="#374151")
+            self.btn_bal_star.config(bg="#374151")
+            self.btn_photometry.config(text="Photometry Mode: Active", bg="#16a34a")
+            self.canvas.config(cursor="crosshair")
+            
+            if len(self.catalog_stars) == 0:
+                download = messagebox.askyesno("Photometry", "No catalog stars loaded. Would you like to query Vizier for catalog stars now?", parent=self.root)
+                if download:
+                    self.download_catalog_stars()
+        else:
+            self.btn_photometry.config(text="Photometry Mode: Off", bg="#374151")
+            self.canvas.config(cursor="")
+            self.calib_stars.clear()
+            self.render_canvas(is_dragging=False)
+
+    def download_catalog_stars(self):
+        if self.fits_data is None or self.wcs is None:
+            messagebox.showerror("Error", "A FITS file with valid WCS headers must be loaded first.")
+            return
+            
+        self.root.config(cursor="watch")
+        self.root.update()
+        
+        # Create a progress log window overlay as requested
+        log_win = tk.Toplevel(self.root)
+        log_win.title("Vizier Query Monitor")
+        log_win.geometry("600x400")
+        log_win.configure(bg="#1f2937")
+        log_win.transient(self.root)
+        
+        lbl = tk.Label(log_win, text="Querying Vizier Catalogs (APASS / Gaia)...", bg="#1f2937", fg="white", font=("Segoe UI", 10, "bold"))
+        lbl.pack(pady=(10, 5))
+        
+        txt_log = tk.Text(log_win, bg="#111827", fg="#10b981", insertbackground="white", font=("Consolas", 9), bd=0, padx=10, pady=10)
+        txt_log.pack(fill="both", expand=True, padx=15, pady=(0, 15))
+        
+        def log_msg(msg):
+            txt_log.insert(tk.END, msg + "\n")
+            txt_log.see(tk.END)
+            log_win.update()
+
+        try:
+            h_orig, w_orig = self.debayered_cache.shape[:2]
+            center_coord = self.wcs.pixel_to_world(w_orig / 2, h_orig / 2)
+            ra_deg = center_coord.ra.deg
+            dec_deg = center_coord.dec.deg
+            
+            log_msg(f"[INFO] Center Coordinates: RA={ra_deg:.6f} deg, DEC={dec_deg:.6f} deg")
+            
+            corner_coord = self.wcs.pixel_to_world(0, 0)
+            radius_deg = center_coord.separation(corner_coord).deg
+            radius_arcmin = radius_deg * 60.0
+            radius_arcmin = min(radius_arcmin, 45.0)
+            log_msg(f"[INFO] Calculated FOV Radius: {radius_arcmin:.2f} arcminutes")
+            
+            import urllib.request
+            import urllib.parse
+            import ssl
+            
+            ssl_context = ssl._create_unverified_context()
+            
+            c_val = f"{ra_deg:.6f} {dec_deg:.6f}".replace(',', '.')
+            c_str = urllib.parse.quote(c_val)
+            catalog_stars = []
+            
+            hosts = ["vizier.cfa.harvard.edu", "vizier.cds.unistra.fr"]
+            
+            for host in hosts:
+                log_msg(f"\n[QUERY] Connecting to mirror: {host}...")
+                
+                # 1. Try APASS DR9
+                url = f"https://{host}/viz-bin/asu-tsv?-source=II/336/apass9&-c={c_str}&-c.r={radius_arcmin:f}&-c.u=arcmin&-out.form=|&-out.add=RAJ2000,DEJ2000&-out=Vmag&-sort=_r&-out.max=1000"
+                log_msg(f"[QUERY] Sending APASS request:\n  {url}")
+                req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+                
+                lines = []
+                try:
+                    with urllib.request.urlopen(req, timeout=8, context=ssl_context) as response:
+                        lines = response.read().decode('utf-8').split('\n')
+                    log_msg(f"[RESPONSE] APASS query returned {len(lines)} raw lines.")
+                except Exception as ex:
+                    log_msg(f"[WARN] APASS request failed or timed out: {ex}")
+                    
+                # Check for database/connection errors in response
+                is_error = False
+                for line in lines[:30]:
+                    if "Error" in line or "not reachable" in line or "connection" in line:
+                        is_error = True
+                        break
+                if is_error:
+                    log_msg(f"[WARN] Database connection error reported by mirror: {host}")
+                    lines = []
+                    
+                # 2. Try Gaia DR3 if APASS returned nothing or failed
+                if len(lines) == 0:
+                    url = f"https://{host}/viz-bin/asu-tsv?-source=I/355/gaiadr3&-c={c_str}&-c.r={radius_arcmin:f}&-c.u=arcmin&-out.form=|&-out.add=RA_ICRS,DE_ICRS&-out=Gmag&-sort=_r&-out.max=1000"
+                    log_msg(f"[QUERY] APASS failed. Trying Gaia DR3 query:\n  {url}")
+                    req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+                    try:
+                        with urllib.request.urlopen(req, timeout=8, context=ssl_context) as response:
+                            lines = response.read().decode('utf-8').split('\n')
+                        log_msg(f"[RESPONSE] Gaia query returned {len(lines)} raw lines.")
+                    except Exception as ex:
+                        log_msg(f"[WARN] Gaia request failed: {ex}")
+                        continue
+                
+                # Check for database/connection errors in Gaia response
+                is_error = False
+                for line in lines[:30]:
+                    if "Error" in line or "not reachable" in line or "connection" in line:
+                        is_error = True
+                        break
+                if is_error:
+                    log_msg(f"[WARN] Database connection error on Gaia query for host: {host}")
+                    continue
+                    
+                # Parse lines using '|' as separator
+                header_found = False
+                cols = {}
+                host_stars = []
+                for line in lines:
+                    line = line.strip()
+                    if not line or line.startswith("#"):
+                        continue
+                    parts = line.split('|')
+                    if not header_found:
+                        if any("RA" in p or "coord" in p or "_RAJ" in p for p in parts):
+                            header_found = True
+                            cols = {p.strip(): i for i, p in enumerate(parts)}
+                            log_msg(f"[PARSER] Header columns resolved: {cols}")
+                        continue
+                    if line.startswith("-"):
+                        continue
+                    if len(parts) >= 3:
+                        try:
+                            ra_idx = cols.get("RAJ2000", cols.get("_RAJ2000", cols.get("RA_ICRS", cols.get("_RA_ICRS", 0))))
+                            dec_idx = cols.get("DEJ2000", cols.get("_DEJ2000", cols.get("DE_ICRS", cols.get("_DE_ICRS", 1))))
+                            mag_idx = cols.get("Vmag", cols.get("Gmag", cols.get("Phot.G", 2)))
+                            
+                            ra_star = float(parts[ra_idx])
+                            dec_star = float(parts[dec_idx])
+                            mag_str = parts[mag_idx].strip()
+                            if mag_str and mag_str != "" and mag_str != "---":
+                                mag = float(mag_str)
+                            else:
+                                continue
+                            host_stars.append({
+                                'ra': ra_star,
+                                'dec': dec_star,
+                                'mag': mag
+                            })
+                        except Exception:
+                            continue
+                            
+                log_msg(f"[PARSER] Successfully parsed {len(host_stars)} stars from mirror {host}.")
+                
+                # If we parsed stars, we're done!
+                if len(host_stars) > 0:
+                    if len(host_stars) > 300:
+                        step = len(host_stars) // 300
+                        catalog_stars = host_stars[::step][:300]
+                        log_msg(f"[INFO] Limited catalog to 300 stars (uniformly sampled by distance/magnitude) to boost performance.")
+                    else:
+                        catalog_stars = host_stars
+                    break
+            
+            self.catalog_stars = catalog_stars
+            
+            # Print a debug list of 10 stars with projected pixel coordinates
+            log_msg("\n[DEBUG] Sample of 10 parsed stars and their projected pixels:")
+            header_epoch = self.fits_header.get('EQUINOX', 2000.0)
+            for idx, star in enumerate(catalog_stars[:10]):
+                try:
+                    input_coord = SkyCoord(ra=star['ra']*u.deg, dec=star['dec']*u.deg, frame='icrs')
+                    if header_epoch == 2000.0:
+                        target_wcs_coord = input_coord.transform_to(FK5(equinox='J2000'))
+                    else:
+                        target_wcs_coord = input_coord.transform_to(FK5(equinox=self.observation_time))
+                    px_x, px_y = self.wcs.world_to_pixel(target_wcs_coord)
+                    log_msg(f"  Star {idx+1}: RA={star['ra']:.5f}, DEC={star['dec']:.5f}, Mag={star['mag']:.2f} -> Pixel: x={px_x:.1f}, y={px_y:.1f} (PIL y={h_orig - 1 - px_y:.1f})")
+                except Exception as ex:
+                    log_msg(f"  Star {idx+1}: RA={star['ra']:.5f}, DEC={star['dec']:.5f} -> Projection failed: {ex}")
+            
+            self.show_catalog_stars.set(True)
+            self.render_canvas(is_dragging=False)
+            log_msg(f"\n[SUCCESS] Download completed! {len(catalog_stars)} stars catalogued.")
+            messagebox.showinfo("Catalog", f"Successfully downloaded {len(catalog_stars)} stars from Vizier catalog.")
+            
+        except Exception as e:
+            log_msg(f"\n[ERROR] Process failed: {e}")
+            messagebox.showerror("Error", f"Failed to download catalog stars: {e}")
+        finally:
+            self.root.config(cursor="")
+
+    def find_centroid(self, data, px, py, box_radius=5):
+        iy, ix = int(round(py)), int(round(px))
+        h, w = data.shape
+        y_min, y_max = max(0, iy - box_radius), min(h, iy + box_radius + 1)
+        x_min, x_max = max(0, ix - box_radius), min(w, ix + box_radius + 1)
+        patch = data[y_min:y_max, x_min:x_max]
+        yy, xx = np.ogrid[y_min:y_max, x_min:x_max]
+        total_val = patch.sum()
+        if total_val > 0.0001:
+            cx = (patch * xx).sum() / total_val
+            cy = (patch * yy).sum() / total_val
+            return float(cx), float(cy)
+        return float(px), float(py)
+
+    def measure_aperture_flux(self, data, px, py, r_ap=6, r_in=10, r_out=15):
+        centroid_x, centroid_y = self.find_centroid(data, px, py, box_radius=4)
+        iy, ix = int(round(centroid_y)), int(round(centroid_x))
+        crop_size = r_out + 2
+        h, w = data.shape
+        y_min, y_max = max(0, iy - crop_size), min(h, iy + crop_size + 1)
+        x_min, x_max = max(0, ix - crop_size), min(w, ix + crop_size + 1)
+        patch = data[y_min:y_max, x_min:x_max]
+        yy, xx = np.ogrid[y_min:y_max, x_min:x_max]
+        dists = np.hypot(xx - centroid_x, yy - centroid_y)
+        source_mask = dists <= r_ap
+        bg_mask = (dists >= r_in) & (dists <= r_out)
+        bg_pixels = patch[bg_mask]
+        if len(bg_pixels) > 0:
+            bg_level = np.median(bg_pixels)
+        else:
+            bg_level = 0.0
+        source_sum = patch[source_mask].sum()
+        num_source_pixels = source_mask.sum()
+        net_flux = source_sum - (num_source_pixels * bg_level)
+        return max(0.0001, net_flux), centroid_x, centroid_y
+
+    def handle_photometry_click(self, px_x, px_y):
+        h_orig, w_orig = self.debayered_cache.shape[:2]
+        img_gray = 0.2126 * self.debayered_cache[:,:,0] + 0.7152 * self.debayered_cache[:,:,1] + 0.0722 * self.debayered_cache[:,:,2]
+        flux, cx, cy = self.measure_aperture_flux(img_gray, px_x, px_y)
+        
+        matched_star = None
+        if self.wcs:
+            clicked_sky = self.wcs.pixel_to_world(cx, cy)
+            best_dist = 999.0
+            for star in self.catalog_stars:
+                star_coord = SkyCoord(ra=star['ra']*u.deg, dec=star['dec']*u.deg, frame='icrs')
+                dist_arcsec = clicked_sky.separation(star_coord).arcsec
+                if dist_arcsec < 15.0 and dist_arcsec < best_dist:
+                    best_dist = dist_arcsec
+                    matched_star = star
+                    
+        if matched_star is not None:
+            if any(np.hypot(s['x'] - cx, s['y'] - cy) < 5 for s in self.calib_stars):
+                messagebox.showinfo("Photometry", "This star is already in the calibration set.")
+                return
+            self.calib_stars.append({
+                'x': cx,
+                'y': cy,
+                'flux': flux,
+                'mag': matched_star['mag']
+            })
+            self.render_canvas(is_dragging=False)
+            messagebox.showinfo("Photometry", 
+                                f"Added Calibration Star:\n"
+                                f"Catalog Magnitude: {matched_star['mag']:.2f}\n"
+                                f"Measured Net Flux: {flux:.1f}\n"
+                                f"Total calibration stars: {len(self.calib_stars)}")
+        else:
+            measure_target = messagebox.askyesno("Photometry", 
+                                                 "No catalog star found near this coordinate.\n"
+                                                 "Do you want to measure this star as the Unknown Target Star?",
+                                                 parent=self.root)
+            if measure_target:
+                if len(self.calib_stars) == 0:
+                    messagebox.showwarning("Photometry", 
+                                           "Please select at least one catalog calibration star (cyan circle) first to establish the zero-point of the image.")
+                    return
+                    
+                zp_list = []
+                for s in self.calib_stars:
+                    zp_val = s['mag'] + 2.5 * np.log10(s['flux'])
+                    zp_list.append(zp_val)
+                    
+                zp = np.mean(zp_list)
+                mag_u = -2.5 * np.log10(flux) + zp
+                
+                coord_text = ""
+                if self.wcs:
+                    sky_coord = self.wcs.pixel_to_world(cx, cy)
+                    j2000 = sky_coord.transform_to(FK5(equinox='J2000'))
+                    ra_str = j2000.ra.to_string(unit="hour", sep="hms", precision=1)
+                    dec_str = j2000.dec.to_string(unit="degree", sep="dms", precision=1)
+                    coord_text = f" (RA:{ra_str} DEC:{dec_str})"
+                    
+                self.push_state()
+                self.annotations.append({
+                    'x': cx / w_orig,
+                    'y': cy / h_orig,
+                    'text': f"Target Mag={mag_u:.2f}{coord_text}"
+                })
+                self.render_canvas(is_dragging=False)
+                
+                zp_details = "\n".join([f"Star {i+1}: Mag={s['mag']:.2f}, Flux={s['flux']:.1f} -> ZP={s['mag'] + 2.5 * np.log10(s['flux']):.2f}" for i, s in enumerate(self.calib_stars)])
+                messagebox.showinfo("Photometry Result", 
+                                    f"Photometry Calibration Successful!\n\n"
+                                    f"Calibration Zero-Points:\n{zp_details}\n"
+                                    f"Average Zero-Point (ZP): {zp:.3f}\n\n"
+                                    f"Target Star Measured Flux: {flux:.1f}\n"
+                                    f"Target Star Calibrated Mag: {mag_u:.2f}\n\n"
+                                    f"Annotation added to image.")
 
 try:
     from astropy.wcs.utils import proj_plane_pixel_scales
