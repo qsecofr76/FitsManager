@@ -438,12 +438,30 @@ class FitsManagerApp:
         # Catalog and Photometry attributes
         self.catalog_stars = []
         self.show_catalog_stars = tk.BooleanVar(value=False)
+        self.asteroid_objects = []
+        self.show_asteroids = tk.BooleanVar(value=True)
         self.photometry_mode = False
         self.calib_stars = []
+        
+        # Ensure dss_cache directory exists
+        import os
+        os.makedirs("dss_cache", exist_ok=True)
+        
+        # DSS Reference Background variables
+        self.loaded_dss_tiles = []  # List of loaded DSS tiles: [{'data': dss_data, 'wcs': dss_wcs, 'ra': ra, 'dec': dec, 'width_arcmin': w}]
+        self.dss_blend_ratio = tk.DoubleVar(value=0.0)
         
         # UI controls vars
         self.bayer_pattern = tk.StringVar(value="None")
         self.channel_selection = tk.StringVar(value="RGB/Luminance")
+        self.var_invert = tk.BooleanVar(value=False)
+        self.var_grayscale = tk.BooleanVar(value=False)
+        
+        # Toolbar buttons reference placeholders
+        self.btn_bal_sky = None
+        self.btn_bal_star = None
+        self.btn_mirror_h = None
+        self.btn_mirror_v = None
         
         # Build UI layout
         self.create_widgets()
@@ -454,90 +472,97 @@ class FitsManagerApp:
         self.root.dnd_bind("<<Drop>>", self.handle_file_drop)
         
     def create_widgets(self):
-        # Reorganize top toolbar to occupy 2 rows to fit all buttons neatly without cutting off
+        # 1. Create Top Menu Bar
+        self.menu_bar = tk.Menu(self.root)
+        self.root.config(menu=self.menu_bar)
+        
+        # File dropdown
+        file_menu = tk.Menu(self.menu_bar, tearoff=0)
+        file_menu.add_command(label="Apri FITS...", command=self.load_fits)
+        file_menu.add_command(label="Esporta Immagine...", command=self.export_image)
+        file_menu.add_separator()
+        file_menu.add_command(label="Esci", command=self.root.quit)
+        self.menu_bar.add_cascade(label="File", menu=file_menu)
+        
+        # View dropdown (Visualizzazione)
+        view_menu = tk.Menu(self.menu_bar, tearoff=0)
+        view_menu.add_command(label="Specchia Orizzontale", command=self.toggle_mirror_h)
+        view_menu.add_command(label="Specchia Verticale", command=self.toggle_mirror_v)
+        view_menu.add_separator()
+        view_menu.add_checkbutton(label="Scala di Grigi (B&W)", variable=self.var_grayscale, command=lambda: self.process_and_update(is_dragging=False))
+        view_menu.add_checkbutton(label="Inverti Colori (Negativo)", variable=self.var_invert, command=lambda: self.process_and_update(is_dragging=False))
+        view_menu.add_separator()
+        view_menu.add_command(label="Reset Zoom & Pan", command=self.reset_view)
+        self.menu_bar.add_cascade(label="Visualizzazione", menu=view_menu)
+        
+        # Color Calibration dropdown (Calibrazione)
+        color_menu = tk.Menu(self.menu_bar, tearoff=0)
+        color_menu.add_command(label="Auto Adaptation (Stretch)", command=self.apply_autostretch)
+        color_menu.add_command(label="Sky Background (Neutro)...", command=self.enable_sky_balance)
+        color_menu.add_command(label="White Star (Calibrazione)...", command=self.enable_star_balance)
+        color_menu.add_separator()
+        color_menu.add_command(label="Reset Colori & Curve", command=self.reset_color_manipulation)
+        self.menu_bar.add_cascade(label="Calibrazione Colore", menu=color_menu)
+        
+        # Astrometry dropdown (Astrometria)
+        astrom_menu = tk.Menu(self.menu_bar, tearoff=0)
+        astrom_menu.add_command(label="Segna Target RA/DEC...", command=self.mark_radec_input)
+        astrom_menu.add_separator()
+        astrom_menu.add_command(label="Scarica Stelle Catalogo (Vizier)", command=self.download_catalog_stars)
+        astrom_menu.add_checkbutton(label="Mostra Cerchi Catalogo", variable=self.show_catalog_stars, command=lambda: self.render_canvas(is_dragging=False))
+        astrom_menu.add_separator()
+        astrom_menu.add_command(label="Query MPC Asteroids (Mag < 21)", command=self.query_mpc_asteroids)
+        astrom_menu.add_checkbutton(label="Mostra Asteroidi", variable=self.show_asteroids, command=lambda: self.render_canvas(is_dragging=False))
+        astrom_menu.add_separator()
+        astrom_menu.add_command(label="Download DSS Sky", command=self.download_dss_background)
+        self.menu_bar.add_cascade(label="Astrometria", menu=astrom_menu)
+        
+        # Photometry dropdown (Fotometria)
+        photo_menu = tk.Menu(self.menu_bar, tearoff=0)
+        photo_menu.add_command(label="Attiva/Disattiva Fotometria", command=self.toggle_photometry_mode)
+        self.menu_bar.add_cascade(label="Fotometria", menu=photo_menu)
+
+        # 2. Create Top Toolbar (Single row)
         toolbar_container = tk.Frame(self.root, bg=self.panel_color, bd=0)
         toolbar_container.pack(side="top", fill="x")
         
-        toolbar_row1 = tk.Frame(toolbar_container, bg=self.panel_color, height=35)
-        toolbar_row1.pack(side="top", fill="x", padx=10, pady=(4, 2))
+        toolbar_row = tk.Frame(toolbar_container, bg=self.panel_color, height=35)
+        toolbar_row.pack(side="top", fill="x", padx=10, pady=4)
         
-        toolbar_row2 = tk.Frame(toolbar_container, bg=self.panel_color, height=35)
-        toolbar_row2.pack(side="top", fill="x", padx=10, pady=(2, 4))
-        
-        # Row 1 buttons: Loading, Undo/Redo, Zoom & View reset, Mirrors
-        btn_open = tk.Button(toolbar_row1, text="Load FITS", command=self.load_fits, bg=self.accent_color, fg="white", font=("Segoe UI", 9, "bold"), bd=0, padx=12, pady=4)
+        btn_open = tk.Button(toolbar_row, text="Load FITS", command=self.load_fits, bg=self.accent_color, fg="white", font=("Segoe UI", 9, "bold"), bd=0, padx=12, pady=4)
         btn_open.pack(side="left", padx=(0, 10))
         
-        btn_undo = tk.Button(toolbar_row1, text="Undo", command=self.undo, bg="#374151", fg="white", font=("Segoe UI", 9), bd=0, padx=12, pady=4)
+        btn_undo = tk.Button(toolbar_row, text="Undo", command=self.undo, bg="#374151", fg="white", font=("Segoe UI", 9), bd=0, padx=12, pady=4)
         btn_undo.pack(side="left", padx=3)
         
-        btn_redo = tk.Button(toolbar_row1, text="Redo", command=self.redo, bg="#374151", fg="white", font=("Segoe UI", 9), bd=0, padx=12, pady=4)
+        btn_redo = tk.Button(toolbar_row, text="Redo", command=self.redo, bg="#374151", fg="white", font=("Segoe UI", 9), bd=0, padx=12, pady=4)
         btn_redo.pack(side="left", padx=3)
         
-        # Zoom panel controls
-        zoom_frame = tk.Frame(toolbar_row1, bg=self.panel_color)
-        zoom_frame.pack(side="left", padx=15)
+        btn_reset_zoom = tk.Button(toolbar_row, text="Reset View", command=self.reset_view, bg="#374151", fg="white", font=("Segoe UI", 9), bd=0, padx=12, pady=4)
+        btn_reset_zoom.pack(side="left", padx=10)
         
-        btn_zoom_in = tk.Button(zoom_frame, text="🔍+", command=self.zoom_in, bg="#374151", fg="white", font=("Segoe UI", 9, "bold"), bd=0, padx=8)
-        btn_zoom_in.pack(side="left", padx=2)
-        btn_zoom_out = tk.Button(zoom_frame, text="🔍-", command=self.zoom_out, bg="#374151", fg="white", font=("Segoe UI", 9, "bold"), bd=0, padx=8)
-        btn_zoom_out.pack(side="left", padx=2)
-        btn_reset_zoom = tk.Button(zoom_frame, text="Reset View", command=self.reset_view, bg="#374151", fg="white", font=("Segoe UI", 9), bd=0, padx=6)
-        btn_reset_zoom.pack(side="left", padx=5)
+        self.btn_crop = tk.Button(toolbar_row, text="Crop Mode: Off", command=self.toggle_crop_mode, bg="#374151", fg="white", font=("Segoe UI", 9), bd=0, padx=12, pady=4)
+        self.btn_crop.pack(side="left", padx=3)
         
-        # Mirror / Telescope simulation buttons
-        mirror_frame = tk.Frame(toolbar_row1, bg=self.panel_color)
-        mirror_frame.pack(side="left", padx=10)
-        self.btn_mirror_h = tk.Button(mirror_frame, text="Flip Horizontal", command=self.toggle_mirror_h, bg="#374151", fg="white", font=("Segoe UI", 9), bd=0, padx=8)
-        self.btn_mirror_h.pack(side="left", padx=2)
-        self.btn_mirror_v = tk.Button(mirror_frame, text="Flip Vertical", command=self.toggle_mirror_v, bg="#374151", fg="white", font=("Segoe UI", 9), bd=0, padx=8)
-        self.btn_mirror_v.pack(side="left", padx=2)
-        
-        # Row 2 buttons: Crop, Annotate, Samplers, Mark WCS, and Export Image
-        self.btn_crop = tk.Button(toolbar_row2, text="Crop Mode: Off", command=self.toggle_crop_mode, bg="#374151", fg="white", font=("Segoe UI", 9), bd=0, padx=12, pady=4)
-        self.btn_crop.pack(side="left", padx=(0, 5))
-        
-        self.btn_annotate = tk.Button(toolbar_row2, text="Annotate Mode: Off", command=self.toggle_annotation_mode, bg="#374151", fg="white", font=("Segoe UI", 9), bd=0, padx=12, pady=4)
+        self.btn_annotate = tk.Button(toolbar_row, text="Annotate Mode: Off", command=self.toggle_annotation_mode, bg="#374151", fg="white", font=("Segoe UI", 9), bd=0, padx=12, pady=4)
         self.btn_annotate.pack(side="left", padx=3)
         
-        # Color Balance Sampler Mode Buttons
-        balance_frame = tk.Frame(toolbar_row2, bg=self.panel_color)
-        balance_frame.pack(side="left", padx=10)
+        btn_mark_radec = tk.Button(toolbar_row, text="Mark RA/DEC Target", command=self.mark_radec_input, bg="#4f46e5", fg="white", font=("Segoe UI", 9, "bold"), bd=0, padx=12, pady=4)
+        btn_mark_radec.pack(side="left", padx=10)
         
-        self.btn_bal_sky = tk.Button(balance_frame, text="Sky Background (Black)", command=self.enable_sky_balance, bg="#374151", fg="white", font=("Segoe UI", 9), bd=0, padx=8)
-        self.btn_bal_sky.pack(side="left", padx=2)
-        self.btn_bal_star = tk.Button(balance_frame, text="White Star (White)", command=self.enable_star_balance, bg="#374151", fg="white", font=("Segoe UI", 9), bd=0, padx=8)
-        self.btn_bal_star.pack(side="left", padx=2)
+        self.btn_catalog = tk.Button(toolbar_row, text="Download Catalog Stars", command=self.download_catalog_stars, bg="#0891b2", fg="white", font=("Segoe UI", 9, "bold"), bd=0, padx=12, pady=4)
+        self.btn_catalog.pack(side="left", padx=3)
         
-        # Grayscale and Reset controls
-        control_frame = tk.Frame(toolbar_row2, bg=self.panel_color)
-        control_frame.pack(side="left", padx=5)
-        
-        self.var_grayscale = tk.BooleanVar(value=False)
-        self.chk_grayscale = tk.Checkbutton(control_frame, text="B&W (Grayscale)", variable=self.var_grayscale, command=lambda: self.process_and_update(is_dragging=False), bg=self.panel_color, fg=self.text_color, selectcolor=self.control_bg, activebackground=self.panel_color, activeforeground=self.text_color)
-        self.chk_grayscale.pack(side="left", padx=5)
-        
-        btn_reset_colors = tk.Button(control_frame, text="Reset Color & Curves", command=self.reset_color_manipulation, bg="#b91c1c", fg="white", font=("Segoe UI", 9, "bold"), bd=0, padx=10, pady=4)
-        btn_reset_colors.pack(side="left", padx=5)
-        
-        # RADEC Mark star button
-        btn_mark_radec = tk.Button(toolbar_row2, text="Mark RA/DEC Target", command=self.mark_radec_input, bg="#4f46e5", fg="white", font=("Segoe UI", 9, "bold"), bd=0, padx=12, pady=4)
-        btn_mark_radec.pack(side="left", padx=5)
-        
-        # Catalog stars button
-        self.btn_catalog = tk.Button(toolbar_row2, text="Download Catalog Stars", command=self.download_catalog_stars, bg="#0891b2", fg="white", font=("Segoe UI", 9, "bold"), bd=0, padx=12, pady=4)
-        self.btn_catalog.pack(side="left", padx=5)
-        
-        # Show/Hide Catalog Stars toggle Checkbutton
-        self.chk_show_catalog = tk.Checkbutton(toolbar_row2, text="Show Stars Overlay", variable=self.show_catalog_stars, command=lambda: self.render_canvas(is_dragging=False), bg=self.panel_color, fg=self.text_color, selectcolor=self.control_bg, activebackground=self.panel_color, activeforeground=self.text_color)
+        self.chk_show_catalog = tk.Checkbutton(toolbar_row, text="Show Stars Overlay", variable=self.show_catalog_stars, command=lambda: self.render_canvas(is_dragging=False), bg=self.panel_color, fg=self.text_color, selectcolor=self.control_bg, activebackground=self.panel_color, activeforeground=self.text_color)
         self.chk_show_catalog.pack(side="left", padx=5)
         
-        # Photometry button
-        self.btn_photometry = tk.Button(toolbar_row2, text="Photometry Mode: Off", command=self.toggle_photometry_mode, bg="#374151", fg="white", font=("Segoe UI", 9), bd=0, padx=12, pady=4)
-        self.btn_photometry.pack(side="left", padx=5)
+        self.btn_photometry = tk.Button(toolbar_row, text="Photometry Mode: Off", command=self.toggle_photometry_mode, bg="#374151", fg="white", font=("Segoe UI", 9), bd=0, padx=12, pady=4)
+        self.btn_photometry.pack(side="left", padx=3)
         
-        # Export Image Button (padded properly to not cut off)
-        btn_export = tk.Button(toolbar_row2, text="Export Image", command=self.export_image, bg="#10b981", fg="white", font=("Segoe UI", 10, "bold"), bd=0, padx=16, pady=5)
+        self.btn_dss = tk.Button(toolbar_row, text="Download DSS Sky", command=self.download_dss_background, bg="#6366f1", fg="white", font=("Segoe UI", 9, "bold"), bd=0, padx=12, pady=4)
+        self.btn_dss.pack(side="left", padx=10)
+        
+        btn_export = tk.Button(toolbar_row, text="Export Image", command=self.export_image, bg="#10b981", fg="white", font=("Segoe UI", 10, "bold"), bd=0, padx=16, pady=5)
         btn_export.pack(side="right", padx=10)
         
         # Main splitter
@@ -636,7 +661,6 @@ class FitsManagerApp:
         lbl_curves_tip = tk.Label(curves_lf, text="Click to add point, drag to modify.\nDouble click point to remove it.", bg=self.panel_color, fg="#9ca3af", font=("Segoe UI", 8))
         lbl_curves_tip.pack(pady=(0, 5))
         
-        self.var_invert = tk.BooleanVar(value=False)
         self.chk_invert = ttk.Checkbutton(curves_lf, text="Negative Image (Invert)", variable=self.var_invert, command=lambda: self.process_and_update(is_dragging=False))
         self.chk_invert.pack(anchor="w", padx=5, pady=5)
         
@@ -646,7 +670,18 @@ class FitsManagerApp:
         
         # Canvas Container Frame (Right Panel) holding Canvas and scrollbars
         canvas_container = tk.Frame(right_panel, bg=self.bg_color)
-        canvas_container.pack(fill="both", expand=True)
+        canvas_container.pack(fill="both", expand=True, side="top")
+        
+        # Bottom controls for Pan-STARRS blend slider
+        bottom_bar = tk.Frame(right_panel, bg=self.panel_color, height=45)
+        bottom_bar.pack(side="bottom", fill="x", padx=10, pady=5)
+        
+        lbl_blend = tk.Label(bottom_bar, text="DSS Sky Blend:", bg=self.panel_color, fg=self.text_color, font=("Segoe UI", 9, "bold"))
+        lbl_blend.pack(side="left", padx=5)
+        
+        # Slider control for blend ratio
+        self.slider_blend = tk.Scale(bottom_bar, from_=0.0, to=1.0, resolution=0.01, orient="horizontal", variable=self.dss_blend_ratio, command=lambda v: self.render_canvas(is_dragging=False), showvalue=True, bg=self.panel_color, fg=self.text_color, highlightthickness=0, troughcolor=self.bg_color, length=300)
+        self.slider_blend.pack(side="left", padx=10)
         
         self.hbar = tk.Scrollbar(canvas_container, orient="horizontal")
         self.hbar.pack(side="bottom", fill="x")
@@ -677,33 +712,39 @@ class FitsManagerApp:
 
     def toggle_mirror_h(self):
         self.mirror_horizontal = not self.mirror_horizontal
-        self.btn_mirror_h.config(bg=self.accent_color if self.mirror_horizontal else "#374151")
+        if self.btn_mirror_h:
+            self.btn_mirror_h.config(bg=self.accent_color if self.mirror_horizontal else "#374151")
         self.process_and_update(is_dragging=False)
         
     def toggle_mirror_v(self):
         self.mirror_vertical = not self.mirror_vertical
-        self.btn_mirror_v.config(bg=self.accent_color if self.mirror_vertical else "#374151")
+        if self.btn_mirror_v:
+            self.btn_mirror_v.config(bg=self.accent_color if self.mirror_vertical else "#374151")
         self.process_and_update(is_dragging=False)
 
     def enable_sky_balance(self):
         self.balance_mode = "Sky"
         self.canvas.config(cursor="crosshair")
-        self.btn_bal_sky.config(bg="#d97706")
-        self.btn_bal_star.config(bg="#374151")
+        if self.btn_bal_sky:
+            self.btn_bal_sky.config(bg="#d97706")
+        if self.btn_bal_star:
+            self.btn_bal_star.config(bg="#374151")
         
     def enable_star_balance(self):
         self.balance_mode = "Star"
         self.canvas.config(cursor="crosshair")
-        self.btn_bal_star.config(bg="#d97706")
-        self.btn_bal_sky.config(bg="#374151")
+        if self.btn_bal_star:
+            self.btn_bal_star.config(bg="#d97706")
+        if self.btn_bal_sky:
+            self.btn_bal_sky.config(bg="#374151")
 
-    def zoom_in(self, target_x=None, target_y=None):
-        self.zoom_to_target(1.3, target_x, target_y)
+    def zoom_in(self, target_x=None, target_y=None, is_interactive=False):
+        self.zoom_to_target(1.3, target_x, target_y, is_interactive)
         
-    def zoom_out(self, target_x=None, target_y=None):
-        self.zoom_to_target(1.0 / 1.3, target_x, target_y)
+    def zoom_out(self, target_x=None, target_y=None, is_interactive=False):
+        self.zoom_to_target(1.0 / 1.3, target_x, target_y, is_interactive)
         
-    def zoom_to_target(self, factor, target_x=None, target_y=None):
+    def zoom_to_target(self, factor, target_x=None, target_y=None, is_interactive=False):
         if self.processed_img_full is None:
             return
             
@@ -738,6 +779,16 @@ class FitsManagerApp:
         self.pan_x = cx - (canvas_w - w * new_scale) / 2.0 - orig_img_x * new_scale
         self.pan_y = cy - (canvas_h - h * new_scale) / 2.0 - orig_img_y * new_scale
         
+        self.render_canvas(is_dragging=is_interactive)
+        
+        # Debounce the high-quality static render
+        if is_interactive:
+            if getattr(self, '_zoom_debounce_job', None) is not None:
+                self.root.after_cancel(self._zoom_debounce_job)
+            self._zoom_debounce_job = self.root.after(200, self._finalize_zoom)
+            
+    def _finalize_zoom(self):
+        self._zoom_debounce_job = None
         self.render_canvas(is_dragging=False)
         
     def reset_view(self):
@@ -747,11 +798,11 @@ class FitsManagerApp:
         self.render_canvas(is_dragging=False)
         
     def on_mousewheel(self, event):
-        # Zoom towards the mouse cursor position
+        # Zoom towards the mouse cursor position interactively
         if event.delta > 0:
-            self.zoom_in(event.x, event.y)
+            self.zoom_in(event.x, event.y, is_interactive=True)
         else:
-            self.zoom_out(event.x, event.y)
+            self.zoom_out(event.x, event.y, is_interactive=True)
 
     def on_pan_start(self, event):
         self.is_panning = True
@@ -839,12 +890,19 @@ class FitsManagerApp:
                 self.catalog_stars = []
                 self.calib_stars = []
                 self.show_catalog_stars.set(False)
+                self.asteroid_objects = []
+                self.show_asteroids.set(True)
+                
+                self.loaded_dss_tiles = []
+                self.dss_blend_ratio.set(0.0)
                 
                 self.sky_sample_rgb = None
                 self.star_sample_rgb = None
                 self.balance_mode = "None"
-                self.btn_bal_sky.config(bg="#374151")
-                self.btn_bal_star.config(bg="#374151")
+                if self.btn_bal_sky:
+                    self.btn_bal_sky.config(bg="#374151")
+                if self.btn_bal_star:
+                    self.btn_bal_star.config(bg="#374151")
                 self.var_grayscale.set(False)
                 
                 if 'BAYERPAT' in self.fits_header:
@@ -860,8 +918,10 @@ class FitsManagerApp:
                 self.pan_y = 0.0
                 self.mirror_horizontal = False
                 self.mirror_vertical = False
-                self.btn_mirror_h.config(bg="#374151")
-                self.btn_mirror_v.config(bg="#374151")
+                if self.btn_mirror_h:
+                    self.btn_mirror_h.config(bg="#374151")
+                if self.btn_mirror_v:
+                    self.btn_mirror_v.config(bg="#374151")
                 
                 self.observation_time = Time.now()
                 if 'DATE-OBS' in self.fits_header:
@@ -1330,15 +1390,129 @@ class FitsManagerApp:
         new_h = int(h * total_scale)
         
         self.img_scale_ratio = total_scale
-        self.img_offset_x = (canvas_w - new_w) // 2 + int(self.pan_x)
-        self.img_offset_y = (canvas_h - new_h) // 2 + int(self.pan_y)
         
-        pil_img = Image.fromarray(img_to_draw)
-        if new_w < 5 or new_h < 5:
+        # Calculate viewport bounds
+        base_offset_x = (canvas_w - new_w) // 2 + int(self.pan_x)
+        base_offset_y = (canvas_h - new_h) // 2 + int(self.pan_y)
+        
+        left_px = -base_offset_x
+        top_px = -base_offset_y
+        right_px = canvas_w - base_offset_x
+        bottom_px = canvas_h - base_offset_y
+        
+        # Calculate visible crop bounding box on the resized image
+        crop_left = max(0, left_px)
+        crop_top = max(0, top_px)
+        crop_right = min(new_w, right_px)
+        crop_bottom = min(new_h, bottom_px)
+        
+        # Calculate bounding box on the original FITS image
+        src_left_int = int(np.floor(crop_left / total_scale))
+        src_top_int = int(np.floor(crop_top / total_scale))
+        src_right_int = int(np.ceil(crop_right / total_scale))
+        src_bottom_int = int(np.ceil(crop_bottom / total_scale))
+        
+        # Clamp to bounds
+        src_left_int = max(0, min(w, src_left_int))
+        src_top_int = max(0, min(h, src_top_int))
+        src_right_int = max(0, min(w, src_right_int))
+        src_bottom_int = max(0, min(h, src_bottom_int))
+        
+        crop_w_src = src_right_int - src_left_int
+        crop_h_src = src_bottom_int - src_top_int
+        
+        if crop_w_src < 2 or crop_h_src < 2:
             return
             
-        resized_pil = pil_img.resize((new_w, new_h), Image.Resampling.NEAREST if is_dragging else Image.Resampling.BILINEAR)
+        # Crop only the visible sky portion
+        crop_img = img_to_draw[src_top_int:src_bottom_int, src_left_int:src_right_int]
         
+        # Resized crop dimensions
+        crop_new_w = int(crop_w_src * total_scale)
+        crop_new_h = int(crop_h_src * total_scale)
+        
+        if crop_new_w < 5 or crop_new_h < 5:
+            return
+            
+        self.img_offset_x = base_offset_x + int(src_left_int * total_scale)
+        self.img_offset_y = base_offset_y + int(src_top_int * total_scale)
+        
+        pil_img = Image.fromarray(crop_img)
+        resized_pil = pil_img.resize((crop_new_w, crop_new_h), Image.Resampling.NEAREST if is_dragging else Image.Resampling.BILINEAR)
+        
+        # Apply DSS blending if loaded, blend_ratio > 0, and not dragging for interactive smoothness
+        blend_alpha = self.dss_blend_ratio.get()
+        if not is_dragging and getattr(self, 'loaded_dss_tiles', None) and blend_alpha > 0.0 and self.wcs is not None:
+            try:
+                resized_np = np.array(resized_pil)
+                
+                # Dynamic caching of warped DSS background based on viewport parameters to maximize slider frame rate
+                view_key = (crop_new_w, crop_new_h, src_left_int, src_top_int, self.zoom_level, self.mirror_horizontal, self.mirror_vertical, len(self.loaded_dss_tiles))
+                if (getattr(self, 'dss_warped_cache', None) is None or 
+                    getattr(self, 'dss_mask_cache', None) is None or 
+                    getattr(self, 'dss_cache_view_key', None) != view_key):
+                    
+                    # Build canvas crop grid
+                    y_indices, x_indices = np.indices((crop_new_h, crop_new_w), dtype=np.float32)
+                    
+                    if self.mirror_horizontal:
+                        rx = 1.0 - (x_indices + 0.5) / crop_new_w
+                    else:
+                        rx = (x_indices + 0.5) / crop_new_w
+                        
+                    if self.mirror_vertical:
+                        ry = 1.0 - (y_indices + 0.5) / crop_new_h
+                    else:
+                        ry = (y_indices + 0.5) / crop_new_h
+                        
+                    fx = src_left_int + rx * crop_w_src - 0.5
+                    fy = src_top_int + ry * crop_h_src - 0.5
+                    
+                    # Remap using astropy WCS coordinates
+                    ra_vals, dec_vals = self.wcs.pixel_to_world_values(fx, fy)
+                    
+                    accum_warped = np.zeros((crop_new_h, crop_new_w), dtype=np.uint8)
+                    accum_mask = np.zeros((crop_new_h, crop_new_w), dtype=bool)
+                    
+                    # Process and stack each loaded sky tile
+                    for tile in self.loaded_dss_tiles:
+                        dss_wcs = tile['wcs']
+                        dss_data = tile['data']
+                        
+                        ps_x, ps_y = dss_wcs.world_to_pixel_values(ra_vals, dec_vals)
+                        ps_h, ps_w = dss_data.shape[:2]
+                        tile_mask = (ps_x >= 0) & (ps_x < ps_w) & (ps_y >= 0) & (ps_y < ps_h)
+                        
+                        if tile_mask.any():
+                            warped_tile = cv2.remap(dss_data, ps_x.astype(np.float32), ps_y.astype(np.float32),
+                                                    cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT, borderValue=0)
+                            accum_warped[tile_mask] = warped_tile[tile_mask]
+                            accum_mask = accum_mask | tile_mask
+                    
+                    # Match channel dimensions
+                    if len(resized_np.shape) == 3 and resized_np.shape[2] == 3:
+                        warped_blend = cv2.merge([accum_warped, accum_warped, accum_warped])
+                    else:
+                        warped_blend = accum_warped
+                        
+                    self.dss_warped_cache = warped_blend
+                    self.dss_mask_cache = accum_mask
+                    self.dss_cache_view_key = view_key
+                
+                # Fetch from cache
+                warped_blend = self.dss_warped_cache
+                valid_mask = self.dss_mask_cache
+                
+                blended_img = resized_np.copy()
+                # Blending only in the overlapping region where DSS data is valid
+                if valid_mask.any():
+                    blended_img[valid_mask] = (blended_img[valid_mask].astype(np.float32) * (1.0 - blend_alpha) + 
+                                               warped_blend[valid_mask].astype(np.float32) * blend_alpha).astype(np.uint8)
+                                               
+                resized_pil = Image.fromarray(blended_img)
+            except Exception as e:
+                pass
+                
         draw = ImageDraw.Draw(resized_pil)
         
         # 1. Draw Saved Annotations
@@ -1349,12 +1523,12 @@ class FitsManagerApp:
             if self.mirror_vertical:
                 ry = 1.0 - ry
                 
-            ax = int(rx * new_w)
-            ay = int(ry * new_h)
+            ax = int(rx * new_w) - int(src_left_int * total_scale)
+            ay = int(ry * new_h) - int(src_top_int * total_scale)
             
-            # Larger crosshair radius as requested
-            self.draw_star_crosshair(draw, ax, ay, size=24, width=2)
-            draw.text((ax + 26, ay + 26), ann['text'], fill=self.green_bright)
+            if 0 <= ax < crop_new_w and 0 <= ay < crop_new_h:
+                self.draw_star_crosshair(draw, ax, ay, size=24, width=2)
+                draw.text((ax + 26, ay + 26), ann['text'], fill=self.green_bright)
             
         # 2. Draw Temporary Target marker
         if self.temp_marker:
@@ -1364,12 +1538,12 @@ class FitsManagerApp:
             if self.mirror_vertical:
                 ry = 1.0 - ry
                 
-            tx = int(rx * new_w)
-            ty = int(ry * new_h)
+            tx = int(rx * new_w) - int(src_left_int * total_scale)
+            ty = int(ry * new_h) - int(src_top_int * total_scale)
             
-            # Larger crosshair radius
-            self.draw_star_crosshair(draw, tx, ty, size=32, width=2)
-            draw.text((tx + 34, ty + 34), f"Target: RA={self.temp_marker['ra']}\nDEC={self.temp_marker['dec']}", fill="#f43f5e")
+            if 0 <= tx < crop_new_w and 0 <= ty < crop_new_h:
+                self.draw_star_crosshair(draw, tx, ty, size=32, width=2)
+                draw.text((tx + 34, ty + 34), f"Target: RA={self.temp_marker['ra']}\nDEC={self.temp_marker['dec']}", fill="#f43f5e")
             
         # 3. Draw Catalog Stars Overlay (cyan circles)
         if self.show_catalog_stars.get() and self.catalog_stars and self.wcs:
@@ -1392,13 +1566,14 @@ class FitsManagerApp:
                             rx = 1.0 - rx
                         if self.mirror_vertical:
                             ry = 1.0 - ry
-                        sx = int(rx * new_w)
-                        sy = int(ry * new_h)
+                        sx = int(rx * new_w) - int(src_left_int * total_scale)
+                        sy = int(ry * new_h) - int(src_top_int * total_scale)
                         
-                        r_star = 8
-                        # Cyan outline for catalog stars
-                        draw.ellipse([sx - r_star, sy - r_star, sx + r_star, sy + r_star], outline="#06b6d4", width=1)
-                        draw.text((sx + 10, sy - 8), f"{star['mag']:.2f}", fill="#06b6d4")
+                        if 0 <= sx < crop_new_w and 0 <= sy < crop_new_h:
+                            r_star = 8
+                            # Cyan outline for catalog stars
+                            draw.ellipse([sx - r_star, sy - r_star, sx + r_star, sy + r_star], outline="#06b6d4", width=1)
+                            draw.text((sx + 10, sy - 8), f"{star['mag']:.2f}", fill="#06b6d4")
                 except Exception:
                     continue
                     
@@ -1412,13 +1587,45 @@ class FitsManagerApp:
                     rx = 1.0 - rx
                 if self.mirror_vertical:
                     ry = 1.0 - ry
-                sx = int(rx * new_w)
-                sy = int(ry * new_h)
+                sx = int(rx * new_w) - int(src_left_int * total_scale)
+                sy = int(ry * new_h) - int(src_top_int * total_scale)
                 
-                r_star = 12
-                # Thicker green circle for calibrated stars
-                draw.ellipse([sx - r_star, sy - r_star, sx + r_star, sy + r_star], outline="#22c55e", width=2)
-                draw.text((sx + 14, sy - 8), "CALIB", fill="#22c55e")
+                if 0 <= sx < crop_new_w and 0 <= sy < crop_new_h:
+                    r_star = 12
+                    # Thicker green circle for calibrated stars
+                    draw.ellipse([sx - r_star, sy - r_star, sx + r_star, sy + r_star], outline="#22c55e", width=2)
+                    draw.text((sx + 14, sy - 8), "CALIB", fill="#22c55e")
+                    
+        # 5. Draw MPC Asteroids Overlay (orange diamonds)
+        if self.show_asteroids.get() and getattr(self, 'asteroid_objects', None) and self.wcs:
+            h_orig, w_orig = self.debayered_cache.shape[:2]
+            for ast in self.asteroid_objects:
+                try:
+                    # Parse RA/Dec HMS/DMS
+                    input_coord = SkyCoord(ast['ra_hms'], ast['dec_dms'], unit=(u.hourangle, u.deg))
+                    px_x, px_y = self.wcs.world_to_pixel(input_coord)
+                    if 0 <= px_x < w_orig and 0 <= px_y < h_orig:
+                        rx = px_x / w_orig
+                        ry = px_y / h_orig
+                        if self.mirror_horizontal:
+                            rx = 1.0 - rx
+                        if self.mirror_vertical:
+                            ry = 1.0 - ry
+                        ax = int(rx * new_w) - int(src_left_int * total_scale)
+                        ay = int(ry * new_h) - int(src_top_int * total_scale)
+                        
+                        if 0 <= ax < crop_new_w and 0 <= ay < crop_new_h:
+                            r_ast = 6
+                            pts = [
+                                (ax, ay - r_ast),
+                                (ax + r_ast, ay),
+                                (ax, ay + r_ast),
+                                (ax - r_ast, ay)
+                            ]
+                            draw.polygon(pts, outline="#f97316", width=2)
+                            draw.text((ax + 10, ay - 8), f"{ast['name']} ({ast['mag']:.1f})", fill="#f97316")
+                except Exception:
+                    continue
                 
         self.tk_image = ImageTk.PhotoImage(resized_pil)
         
@@ -1501,8 +1708,10 @@ class FitsManagerApp:
         if self.crop_mode:
             self.annotation_mode = False
             self.balance_mode = "None"
-            self.btn_bal_sky.config(bg="#374151")
-            self.btn_bal_star.config(bg="#374151")
+            if self.btn_bal_sky:
+                self.btn_bal_sky.config(bg="#374151")
+            if self.btn_bal_star:
+                self.btn_bal_star.config(bg="#374151")
             self.btn_annotate.config(text="Annotate Mode: Off", bg="#374151")
             self.btn_crop.config(text="Crop Mode: ON", bg="#e11d48")
             self.canvas.config(cursor="cross")
@@ -1518,8 +1727,10 @@ class FitsManagerApp:
         if self.annotation_mode:
             self.crop_mode = False
             self.balance_mode = "None"
-            self.btn_bal_sky.config(bg="#374151")
-            self.btn_bal_star.config(bg="#374151")
+            if self.btn_bal_sky:
+                self.btn_bal_sky.config(bg="#374151")
+            if self.btn_bal_star:
+                self.btn_bal_star.config(bg="#374151")
             self.btn_crop.config(text="Crop Mode: Off", bg="#374151")
             self.btn_annotate.config(text="Annotate Mode: ON", bg="#10b981")
             self.canvas.config(cursor="tcross")
@@ -1657,8 +1868,10 @@ class FitsManagerApp:
                 
             self.balance_mode = "None"
             self.canvas.config(cursor="")
-            self.btn_bal_sky.config(bg="#374151")
-            self.btn_bal_star.config(bg="#374151")
+            if self.btn_bal_sky:
+                self.btn_bal_sky.config(bg="#374151")
+            if self.btn_bal_star:
+                self.btn_bal_star.config(bg="#374151")
             self.process_and_update(is_dragging=False)
             return
 
@@ -1979,8 +2192,10 @@ class FitsManagerApp:
             self.balance_mode = "None"
             self.btn_crop.config(text="Crop Mode: Off", bg="#374151")
             self.btn_annotate.config(text="Annotate Mode: Off", bg="#374151")
-            self.btn_bal_sky.config(bg="#374151")
-            self.btn_bal_star.config(bg="#374151")
+            if self.btn_bal_sky:
+                self.btn_bal_sky.config(bg="#374151")
+            if self.btn_bal_star:
+                self.btn_bal_star.config(bg="#374151")
             self.btn_photometry.config(text="Photometry Mode: Active", bg="#16a34a")
             self.canvas.config(cursor="crosshair")
             
@@ -2022,17 +2237,45 @@ class FitsManagerApp:
 
         try:
             h_orig, w_orig = self.debayered_cache.shape[:2]
-            center_coord = self.wcs.pixel_to_world(w_orig / 2, h_orig / 2)
-            ra_deg = center_coord.ra.deg
-            dec_deg = center_coord.dec.deg
             
-            log_msg(f"[INFO] Center Coordinates: RA={ra_deg:.6f} deg, DEC={dec_deg:.6f} deg")
-            
-            corner_coord = self.wcs.pixel_to_world(0, 0)
-            radius_deg = center_coord.separation(corner_coord).deg
+            # Target annotation or viewport center coordinate
+            ra_deg, dec_deg = None, None
+            if getattr(self, 'annotations', None) and self.wcs:
+                ann = self.annotations[0]
+                px = ann['x'] * w_orig
+                py = ann['y'] * h_orig
+                sky = self.wcs.pixel_to_world(px, py)
+                ra_deg = sky.ra.deg
+                dec_deg = sky.dec.deg
+                log_msg(f"[INFO] Targeting annotation: RA={ra_deg:.6f} deg, DEC={dec_deg:.6f} deg")
+            else:
+                canvas_w = self.canvas.winfo_width()
+                canvas_h = self.canvas.winfo_height()
+                cx = canvas_w / 2.0
+                cy = canvas_h / 2.0
+                img_x = (cx - self.img_offset_x) / self.img_scale_ratio
+                img_y = (cy - self.img_offset_y) / self.img_scale_ratio
+                if self.mirror_horizontal:
+                    img_x = (w_orig - 1) - img_x
+                if self.mirror_vertical:
+                    img_y = (h_orig - 1) - img_y
+                center_coord = self.wcs.pixel_to_world(img_x, img_y)
+                ra_deg = center_coord.ra.deg
+                dec_deg = center_coord.dec.deg
+                log_msg(f"[INFO] Targeting viewport center: RA={ra_deg:.6f} deg, DEC={dec_deg:.6f} deg")
+                
+            # Viewport radius calculation
+            canvas_w = self.canvas.winfo_width()
+            canvas_h = self.canvas.winfo_height()
+            diag_canvas_px = np.sqrt(canvas_w**2 + canvas_h**2) / 2.0
+            diag_img_px = diag_canvas_px / self.img_scale_ratio
+            from astropy.wcs.utils import proj_plane_pixel_scales
+            scales = proj_plane_pixel_scales(self.wcs)
+            pixel_scale_deg = np.mean(scales)
+            radius_deg = diag_img_px * pixel_scale_deg
             radius_arcmin = radius_deg * 60.0
-            radius_arcmin = min(radius_arcmin, 45.0)
-            log_msg(f"[INFO] Calculated FOV Radius: {radius_arcmin:.2f} arcminutes")
+            radius_arcmin = np.clip(radius_arcmin, 3.0, 45.0)
+            log_msg(f"[INFO] Viewport query radius: {radius_arcmin:.2f} arcminutes")
             
             import urllib.request
             import urllib.parse
@@ -2173,6 +2416,130 @@ class FitsManagerApp:
         finally:
             self.root.config(cursor="")
 
+    def query_mpc_asteroids(self):
+        if self.fits_data is None or self.wcs is None:
+            messagebox.showerror("Error", "A FITS file with valid WCS headers must be loaded first.")
+            return
+            
+        self.root.config(cursor="watch")
+        self.root.update()
+        
+        # Create a progress log window overlay
+        log_win = tk.Toplevel(self.root)
+        log_win.title("MPC Asteroid Query Monitor")
+        log_win.geometry("600x400")
+        log_win.configure(bg="#1f2937")
+        log_win.transient(self.root)
+        
+        lbl = tk.Label(log_win, text="Querying SkyBoT (IMCCE/MPC Resolver) for Asteroids...", bg="#1f2937", fg="white", font=("Segoe UI", 10, "bold"))
+        lbl.pack(pady=(10, 5))
+        
+        txt_log = tk.Text(log_win, bg="#111827", fg="#f43f5e", insertbackground="white", font=("Consolas", 9), bd=0, padx=10, pady=10)
+        txt_log.pack(fill="both", expand=True, padx=15, pady=(0, 15))
+        
+        def log_msg(msg):
+            txt_log.insert(tk.END, msg + "\n")
+            txt_log.see(tk.END)
+            log_win.update()
+
+        try:
+            h_orig, w_orig = self.debayered_cache.shape[:2]
+            
+            # Target the exact center of the full FITS image
+            center_coord = self.wcs.pixel_to_world(w_orig / 2.0, h_orig / 2.0)
+            ra_deg = center_coord.ra.deg
+            dec_deg = center_coord.dec.deg
+            log_msg(f"[INFO] Targeting full image center: RA={ra_deg:.6f} deg, DEC={dec_deg:.6f} deg")
+            
+            # Diagonal radius calculation for the full FITS footprint
+            corner_coord = self.wcs.pixel_to_world(0, 0)
+            radius_deg = center_coord.separation(corner_coord).deg
+            # Limit the query radius to a reasonable maximum (e.g., 3.0 degrees) to prevent timeouts
+            radius_deg = np.clip(radius_deg, 0.05, 3.0)
+            log_msg(f"[INFO] Full image FOV query radius: {radius_deg:.3f} degrees")
+            
+            # 3. Determine epoch/time of observation
+            epoch_str = "now"
+            if getattr(self, 'observation_time', None) is not None:
+                epoch_str = self.observation_time.isot.replace('T', ' ')
+            elif 'DATE-OBS' in self.fits_header:
+                epoch_str = self.fits_header['DATE-OBS'].replace('T', ' ')
+            log_msg(f"[INFO] Epoch of observation: {epoch_str}")
+            
+            import urllib.request
+            import urllib.parse
+            import ssl
+            import json
+            from astropy.coordinates import SkyCoord
+            import astropy.units as u
+            
+            # Build URL parameters for SkyBoT conesearch API
+            params = {
+                '-ra': f"{ra_deg:.6f}",
+                '-dec': f"{dec_deg:.6f}",
+                '-sr': f"{radius_deg:.4f}",
+                '-ep': epoch_str,
+                '-mime': 'json',
+                '-output': 'all',
+                '-from': 'FitsManager'
+            }
+            
+            query_str = urllib.parse.urlencode(params)
+            url = f"https://ssp.imcce.fr/webservices/skybot/api/conesearch.php?{query_str}"
+            log_msg(f"[QUERY] Sending request to IMCCE SkyBoT:\n  {url}")
+            
+            ssl_context = ssl._create_unverified_context()
+            req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+            
+            with urllib.request.urlopen(req, timeout=20, context=ssl_context) as response:
+                status_code = response.status
+                if status_code == 204:
+                    log_msg("\n[INFO] Response code 204: No solar system objects found in this region at this time.")
+                    self.asteroid_objects = []
+                    messagebox.showinfo("SkyBoT", "No asteroids found in this field of view at the epoch of observation.")
+                    return
+                elif status_code != 200:
+                    raise Exception(f"HTTP Server returned status code {status_code}")
+                    
+                content = response.read().decode('utf-8')
+                
+            parsed = json.loads(content)
+            log_msg(f"[RESPONSE] Successfully parsed {len(parsed)} objects.")
+            
+            # Filter objects by magnitude < 21
+            filtered_asteroids = []
+            for item in parsed:
+                mag = item.get("VMag (mag)", item.get("V"))
+                if mag is not None:
+                    try:
+                        mag_val = float(mag)
+                        if mag_val < 21.0:
+                            filtered_asteroids.append({
+                                'name': item.get('Name', 'Unknown'),
+                                'ra_hms': item.get('RA (hms)', item.get('RA (hour)')),
+                                'dec_dms': item.get('DEC (dms)', item.get('DEC (deg)')),
+                                'mag': mag_val,
+                                'class': item.get('Class', '')
+                            })
+                    except ValueError:
+                        pass
+                        
+            # Project celestial coordinates of filtered asteroids to pixel locations
+            log_msg(f"\n[INFO] Found {len(filtered_asteroids)} asteroids with Mag < 21.0. Projecting...")
+            
+            self.asteroid_objects = filtered_asteroids
+            self.show_asteroids.set(True)
+            self.render_canvas(is_dragging=False)
+            
+            log_msg(f"\n[SUCCESS] Completed! {len(filtered_asteroids)} asteroids plotted on the image.")
+            messagebox.showinfo("SkyBoT MPC", f"Found and plotted {len(filtered_asteroids)} asteroids with Mag < 21.")
+            
+        except Exception as e:
+            log_msg(f"\n[ERROR] Process failed: {e}")
+            messagebox.showerror("Error", f"Failed to query asteroids: {e}")
+        finally:
+            self.root.config(cursor="")
+
     def find_centroid(self, data, px, py, box_radius=5):
         iy, ix = int(round(py)), int(round(px))
         h, w = data.shape
@@ -2284,6 +2651,359 @@ class FitsManagerApp:
                                     f"Target Star Measured Flux: {flux:.1f}\n"
                                     f"Target Star Calibrated Mag: {mag_u:.2f}\n\n"
                                     f"Annotation added to image.")
+        
+    def get_cached_tile(self, ra, dec, size):
+        import os
+        import numpy as np
+        if not os.path.exists("dss_cache"):
+            return None
+        for filename in os.listdir("dss_cache"):
+            if filename.startswith("dss_") and filename.endswith(".fits"):
+                parts = filename.replace(".fits", "").split("_")
+                if len(parts) == 4:
+                    try:
+                        file_ra = float(parts[1])
+                        file_dec = float(parts[2])
+                        file_size = float(parts[3])
+                        
+                        # High-speed flat-plane angular distance approximation (nanoseconds vs 100ms SkyCoord)
+                        d_dec = dec - file_dec
+                        d_ra = ((ra - file_ra) * np.cos(np.radians((dec + file_dec) / 2.0))) % 360.0
+                        if d_ra > 180.0:
+                            d_ra = 360.0 - d_ra
+                        dist_arcmin = np.sqrt(d_ra**2 + d_dec**2) * 60.0
+                        
+                        # Increased matching tolerance to 10 arcminutes to reuse nearby caches
+                        if dist_arcmin < 10.0 and file_size >= size - 0.1:
+                            return os.path.join("dss_cache", filename)
+                    except Exception:
+                        pass
+        return None
+
+    def is_coord_covered(self, ra, dec):
+        import numpy as np
+        for tile in self.loaded_dss_tiles:
+            tile_ra = tile.get('ra')
+            tile_dec = tile.get('dec')
+            if tile_ra is not None and tile_dec is not None:
+                d_dec = dec - tile_dec
+                d_ra = ((ra - tile_ra) * np.cos(np.radians((dec + tile_dec) / 2.0))) % 360.0
+                if d_ra > 180.0:
+                    d_ra = 360.0 - d_ra
+                dist_arcmin = np.sqrt(d_ra**2 + d_dec**2) * 60.0
+                # A 45 arcminute tile has a half-width of 22.5 arcminutes.
+                # If coordinate is within 20 arcminutes of the center, it is covered!
+                if dist_arcmin < 20.0:
+                    return True
+        return False
+
+    def download_dss_background(self):
+        if self.fits_data is None or self.wcs is None:
+            messagebox.showerror("Error", "A FITS file with valid WCS headers must be loaded first.")
+            return
+            
+        self.root.config(cursor="watch")
+        self.root.update()
+        
+        # Create a progress log window overlay
+        log_win = tk.Toplevel(self.root)
+        log_win.title("DSS Cutout Service Monitor")
+        log_win.geometry("600x450")
+        log_win.configure(bg="#1f2937")
+        log_win.transient(self.root)
+        
+        lbl = tk.Label(log_win, text="Retrieving DSS2 Reference Survey Image...", bg="#1f2937", fg="white", font=("Segoe UI", 10, "bold"))
+        lbl.pack(pady=(10, 5))
+        
+        # Add Progress Bar
+        from tkinter import ttk
+        style = ttk.Style(log_win)
+        style.theme_use('clam')
+        style.configure("DSS.Horizontal.TProgressbar", troughcolor="#111827", background="#38bdf8", bordercolor="#1f2937", lightcolor="#38bdf8", darkcolor="#38bdf8")
+        
+        progress_bar = ttk.Progressbar(log_win, style="DSS.Horizontal.TProgressbar", orient="horizontal", mode="determinate", length=560)
+        progress_bar.pack(pady=5, padx=15, fill="x")
+        
+        txt_log = tk.Text(log_win, bg="#111827", fg="#38bdf8", insertbackground="white", font=("Consolas", 9), bd=0, padx=10, pady=10)
+        txt_log.pack(fill="both", expand=True, padx=15, pady=(0, 10))
+        
+        self.dss_download_cancelled = False
+        def cancel_download():
+            self.dss_download_cancelled = True
+            log_msg("[INFO] Cancellation requested by user...")
+            
+        btn_cancel = tk.Button(log_win, text="Cancel Download", command=cancel_download, bg="#ef4444", fg="white", font=("Segoe UI", 9, "bold"), bd=0, padx=15, pady=6)
+        btn_cancel.pack(pady=(0, 15))
+        
+        def log_msg(msg):
+            def _log():
+                txt_log.insert(tk.END, msg + "\n")
+                txt_log.see(tk.END)
+            log_win.after(0, _log)
+            
+        def set_progress(value, max_val):
+            def _prog():
+                progress_bar.config(maximum=max_val, value=value)
+            log_win.after(0, _prog)
+            
+        # Reset current loaded tiles list
+        self.loaded_dss_tiles = []
+        
+        def add_tile_to_memory(file_path, r_val=None, d_val=None, should_render=True):
+            try:
+                import os
+                # Parse RA/Dec from filename if not explicitly provided
+                if r_val is None or d_val is None:
+                    parts = os.path.basename(file_path).replace(".fits", "").split("_")
+                    if len(parts) == 4:
+                        r_val = float(parts[1])
+                        d_val = float(parts[2])
+                with fits.open(file_path) as hdul:
+                    dss_data = hdul[0].data.astype(np.float32)
+                    dss_header = hdul[0].header
+                    wcs_obj = WCS(dss_header, naxis=2)
+                
+                # Stretch/normalize data
+                vmin, vmax = np.percentile(dss_data, [1.0, 99.5])
+                dss_raw = np.clip((dss_data - vmin) / (vmax - vmin) * 255.0, 0, 255).astype(np.uint8)
+                
+                # Save parsed tile in list
+                self.loaded_dss_tiles.append({
+                    'data': dss_raw,
+                    'wcs': wcs_obj,
+                    'path': file_path,
+                    'ra': r_val,
+                    'dec': d_val
+                })
+                
+                if should_render:
+                    # Set slider and redraw
+                    self.dss_blend_ratio.set(0.50)
+                    # Reset view cache to force redraw of DSS layer
+                    self.dss_warped_cache = None
+                    self.render_canvas(is_dragging=False)
+                    # Release hourglass/watch cursor as soon as we have at least one tile loaded so the user can interact
+                    self.root.config(cursor="")
+            except Exception as e:
+                log_msg(f"[ERROR] Failed to load tile {file_path}: {e}")
+
+        # Scan and preload all overlapping cached tiles instantly on click using fast angular distance math
+        import os
+        import numpy as np
+        
+        h_orig, w_orig = self.debayered_cache.shape[:2]
+        center_coord = self.wcs.pixel_to_world(w_orig / 2.0, h_orig / 2.0)
+        target_ra = center_coord.ra.deg
+        target_dec = center_coord.dec.deg
+        
+        corner_coord = self.wcs.pixel_to_world(0, 0)
+        radius_deg = center_coord.separation(corner_coord).deg
+        
+        if os.path.exists("dss_cache"):
+            log_msg("[INFO] Preloading overlapping files from cache...")
+            for filename in os.listdir("dss_cache"):
+                if filename.startswith("dss_") and filename.endswith(".fits"):
+                    parts = filename.replace(".fits", "").split("_")
+                    if len(parts) == 4:
+                        try:
+                            file_ra = float(parts[1])
+                            file_dec = float(parts[2])
+                            file_size = float(parts[3])
+                            
+                            d_dec = target_dec - file_dec
+                            d_ra = ((target_ra - file_ra) * np.cos(np.radians((target_dec + file_dec) / 2.0))) % 360.0
+                            if d_ra > 180.0:
+                                d_ra = 360.0 - d_ra
+                            dist_deg = np.sqrt(d_ra**2 + d_dec**2)
+                            
+                            # Check overlap footprint
+                            max_dist_deg = radius_deg + (file_size / 60.0) * 0.70
+                            if dist_deg < max_dist_deg:
+                                log_msg(f"[CACHE] Auto-loading cached tile: {filename}")
+                                add_tile_to_memory(os.path.join("dss_cache", filename), file_ra, file_dec, should_render=False)
+                        except Exception:
+                            pass
+            
+            # Perform a single high-quality render after loading all cached tiles to avoid stuttering
+            if self.loaded_dss_tiles:
+                self.dss_blend_ratio.set(0.50)
+                self.dss_warped_cache = None
+                self.render_canvas(is_dragging=False)
+                self.root.config(cursor="")
+
+        def finish_all_done():
+            self.root.config(cursor="")
+            log_msg("[SUCCESS] All sky tiles retrieved and merged!")
+            messagebox.showinfo("DSS Sky", "Successfully loaded DSS reference sky.\nAdjust 'DSS Sky Blend' slider below to crossfade.", parent=self.root)
+
+        def finish_error(err):
+            self.root.config(cursor="")
+            log_msg(f"[ERROR] Failed to download DSS: {err}")
+            messagebox.showerror("Error", f"Failed to retrieve DSS image: {err}", parent=self.root)
+
+        def worker():
+            try:
+                h_orig, w_orig = self.debayered_cache.shape[:2]
+                
+                # 1. Determine primary query coordinate (Annotation RA/Dec or center)
+                target_ra, target_dec = None, None
+                if getattr(self, 'annotations', None) and self.wcs:
+                    ann = self.annotations[0]
+                    px = ann['x'] * w_orig
+                    py = ann['y'] * h_orig
+                    sky = self.wcs.pixel_to_world(px, py)
+                    target_ra = sky.ra.deg
+                    target_dec = sky.dec.deg
+                    log_msg(f"[INFO] Targeting annotation coordinate: RA={target_ra:.6f} deg, DEC={target_dec:.6f} deg")
+                else:
+                    center_coord = self.wcs.pixel_to_world(w_orig / 2.0, h_orig / 2.0)
+                    target_ra = center_coord.ra.deg
+                    target_dec = center_coord.dec.deg
+                    log_msg(f"[INFO] Targeting center coordinate: RA={target_ra:.6f} deg, DEC={target_dec:.6f} deg")
+                
+                corner_coord = self.wcs.pixel_to_world(0, 0)
+                radius_deg = self.wcs.pixel_to_world(w_orig / 2.0, h_orig / 2.0).separation(corner_coord).deg
+                radius_arcmin = radius_deg * 60.0
+                
+                # We request a tile size of 45 arcminutes (fast query size)
+                tile_size_arcmin = 45.0
+                
+                # 2. Build grid coordinates to cover the FITS footprint
+                # Step size is 30 arcminutes to guarantee substantial overlap
+                step_deg = 0.5
+                dx_vals = [-step_deg, 0.0, step_deg]
+                dy_vals = [-step_deg, 0.0, step_deg]
+                
+                # Cosine factor for RA offset
+                cos_dec = np.cos(np.radians(target_dec))
+                cos_dec_val = max(1e-6, cos_dec)
+                
+                candidate_coords = []
+                for dx in dx_vals:
+                    for dy in dy_vals:
+                        cand_ra = (target_ra + dx / cos_dec_val) % 360.0
+                        cand_dec = target_dec + dy
+                        if -90.0 <= cand_dec <= 90.0:
+                            candidate_coords.append((cand_ra, cand_dec))
+                
+                # Filter grid coordinates that fall inside FITS viewport
+                grid_points = []
+                for r, d in candidate_coords:
+                    # Target center (0.0, 0.0 offset) is always queried first
+                    if abs(r - target_ra) < 0.001 and abs(d - target_dec) < 0.001:
+                        grid_points.insert(0, (r, d))
+                        continue
+                        
+                    try:
+                        px, py = self.wcs.world_to_pixel(SkyCoord(ra=r*u.deg, dec=d*u.deg, frame='icrs'))
+                        # Keep coordinates that map close to FITS footprint
+                        if -200 <= px < w_orig + 200 and -200 <= py < h_orig + 200:
+                            grid_points.append((r, d))
+                    except Exception:
+                        pass
+                
+                # Exclude coordinates that are already covered by preloaded/cached tiles
+                remaining_points = []
+                for r, d in grid_points:
+                    if not self.is_coord_covered(r, d):
+                        remaining_points.append((r, d))
+                    else:
+                        log_msg(f"[CACHE] Sky region at RA={r:.4f}, DEC={d:.4f} is already covered by a loaded tile. Skipping query.")
+                
+                log_msg(f"[INFO] Generated footprint grid: {len(remaining_points)} tiles to load.")
+                
+                import urllib.request
+                import urllib.parse
+                import os
+                
+                # Download / Load tiles sequentially
+                for idx, (tile_ra, tile_dec) in enumerate(remaining_points):
+                    if self.dss_download_cancelled:
+                        raise Exception("Download cancelled by user.")
+                        
+                    log_msg(f"\n--- Loading tile {idx+1}/{len(remaining_points)} at RA={tile_ra:.4f}, DEC={tile_dec:.4f} ---")
+                    
+                    # Check cache first
+                    cached_path = self.get_cached_tile(tile_ra, tile_dec, tile_size_arcmin)
+                    if cached_path:
+                        log_msg(f"[CACHE] Found local cache: {os.path.basename(cached_path)}")
+                        log_win.after(0, lambda p=cached_path: add_tile_to_memory(p))
+                        continue
+                        
+                    # Request from server
+                    coord = SkyCoord(ra=tile_ra*u.deg, dec=tile_dec*u.deg, frame='icrs')
+                    ra_str = coord.ra.to_string(unit="hour", sep=" ", precision=2)
+                    dec_str = coord.dec.to_string(unit="degree", sep=" ", precision=2)
+                    
+                    params = {
+                        'v': 'poss2ukstu_red',
+                        'r': ra_str,
+                        'd': dec_str,
+                        'e': 'J2000',
+                        'h': f"{tile_size_arcmin:.2f}",
+                        'w': f"{tile_size_arcmin:.2f}",
+                        'f': 'fits'
+                    }
+                    query_str = urllib.parse.urlencode(params)
+                    url = f"http://archive.stsci.edu/cgi-bin/dss_search?{query_str}"
+                    log_msg(f"[QUERY] Fetching FITS from: {url}")
+                    
+                    req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+                    with urllib.request.urlopen(req, timeout=30) as response:
+                        content_length = response.headers.get('Content-Length')
+                        total_bytes = int(content_length) if content_length else 0
+                        if total_bytes:
+                            log_msg(f"[INFO] File size: {total_bytes / 1024.0 / 1024.0:.2f} MB")
+                            set_progress(0, total_bytes)
+                        else:
+                            set_progress(0, 100)
+                            
+                        img_data = bytearray()
+                        downloaded_bytes = 0
+                        chunk_size = 65536
+                        last_log_time = 0
+                        
+                        while True:
+                            if self.dss_download_cancelled:
+                                raise Exception("Download cancelled by user.")
+                            chunk = response.read(chunk_size)
+                            if not chunk:
+                                break
+                            img_data.extend(chunk)
+                            downloaded_bytes += len(chunk)
+                            
+                            if total_bytes:
+                                set_progress(downloaded_bytes, total_bytes)
+                                import time
+                                current_time = time.time()
+                                if current_time - last_log_time > 1.5 or downloaded_bytes == total_bytes:
+                                    pct = (downloaded_bytes / total_bytes) * 100
+                                    log_msg(f"[INFO] Downloading: {pct:.1f}%")
+                                    last_log_time = current_time
+                            else:
+                                set_progress(downloaded_bytes % 100, 100)
+                                
+                    if b"html" in img_data[:100].lower() or b"<!doctype" in img_data[:100].lower():
+                        raise Exception("STScI service returned an HTML error page.")
+                        
+                    # Save to cache folder
+                    cache_filename = f"dss_{tile_ra:.6f}_{tile_dec:.6f}_{tile_size_arcmin:.1f}.fits"
+                    save_path = os.path.join("dss_cache", cache_filename)
+                    with open(save_path, "wb") as f:
+                        f.write(img_data)
+                    log_msg(f"[CACHE] Saved to cache: {cache_filename}")
+                    
+                    log_win.after(0, lambda p=save_path: add_tile_to_memory(p))
+                    
+                log_win.after(0, finish_all_done)
+                
+            except Exception as e:
+                log_win.after(0, lambda: finish_error(e))
+
+        import threading
+        download_thread = threading.Thread(target=worker)
+        download_thread.daemon = True
+        download_thread.start()
 
 try:
     from astropy.wcs.utils import proj_plane_pixel_scales
