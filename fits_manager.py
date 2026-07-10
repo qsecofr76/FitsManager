@@ -11,6 +11,7 @@ from scipy.interpolate import PchipInterpolator
 from astropy.coordinates import SkyCoord, FK5
 import astropy.units as u
 from astropy.time import Time
+import time
 
 # Curves widget managing separate curves for RGB/Luminance, Red, Green, Blue
 class CurvesWidget(tk.Canvas):
@@ -338,11 +339,140 @@ class CurvesWidget(tk.Canvas):
                 break
 
 
+class ColorIndexDialog(tk.Toplevel):
+    def __init__(self, parent, is_gaia=True, default_val=0.8):
+        super().__init__(parent)
+        self.transient(parent)
+        self.grab_set()
+        self.title("Target Color Selection")
+        self.geometry("450x260")
+        self.resizable(False, False)
+        
+        self.result = default_val
+        self.is_gaia = is_gaia
+        self.options = []
+        
+        # Style match
+        self.configure(bg="#1e293b")
+        
+        lbl_title = tk.Label(self, text="Target Object Type / Color Correction", bg="#1e293b", fg="#f8fafc", font=("Segoe UI", 11, "bold"))
+        lbl_title.pack(padx=15, pady=(15, 5), anchor="w")
+        
+        desc_text = (
+            "Because digital camera sensors are color-sensitive, calculating accurate\n"
+            "magnitudes requires a small correction based on the object's color.\n"
+            "Please choose the object type that best matches your target:"
+        )
+        lbl_desc = tk.Label(self, text=desc_text, bg="#1e293b", fg="#94a3b8", font=("Segoe UI", 9), justify="left")
+        lbl_desc.pack(padx=15, pady=(0, 15), anchor="w")
+        
+        # Options list
+        if is_gaia:
+            self.options = [
+                ("Yellow Dwarf (Sun-like) / Asteroid", 0.8),
+                ("Nova (Typical / Early Outburst)", 0.6),
+                ("Supernova (Typical Ia / Near Max)", 0.2),
+                ("Red Dwarf / M-Class Star", 2.0),
+                ("Orange Dwarf / K-Class Star", 1.2),
+                ("White Main Sequence / A-Class Star", 0.0),
+                ("Hot Blue Giant / O-Class Star", -0.3),
+                ("Custom Value", None)
+            ]
+        else:
+            self.options = [
+                ("Yellow Dwarf (Sun-like) / Asteroid", 0.6),
+                ("Nova (Typical / Early Outburst)", 0.4),
+                ("Supernova (Typical Ia / Near Max)", 0.0),
+                ("Red Dwarf / M-Class Star", 1.4),
+                ("Orange Dwarf / K-Class Star", 1.0),
+                ("White Main Sequence / A-Class Star", 0.0),
+                ("Hot Blue Giant / O-Class Star", -0.3),
+                ("Custom Value", None)
+            ]
+            
+        opt_names = [opt[0] for opt in self.options]
+        
+        frame_input = tk.Frame(self, bg="#1e293b")
+        frame_input.pack(fill="x", padx=15, pady=5)
+        
+        lbl_type = tk.Label(frame_input, text="Object Type:", bg="#1e293b", fg="#f8fafc", font=("Segoe UI", 9, "bold"))
+        lbl_type.grid(row=0, column=0, padx=5, pady=5, sticky="w")
+        
+        self.combo = ttk.Combobox(frame_input, values=opt_names, state="readonly", width=35)
+        self.combo.grid(row=0, column=1, padx=5, pady=5, sticky="w")
+        self.combo.set(opt_names[0])
+        self.combo.bind("<<ComboboxSelected>>", self.on_combo_change)
+        
+        lbl_val = tk.Label(frame_input, text="Color Index Value:", bg="#1e293b", fg="#f8fafc", font=("Segoe UI", 9, "bold"))
+        lbl_val.grid(row=1, column=0, padx=5, pady=5, sticky="w")
+        
+        self.entry_val = tk.Entry(frame_input, bg="#334155", fg="white", insertbackground="white", bd=1, width=12, font=("Consolas", 10))
+        self.entry_val.grid(row=1, column=1, padx=5, pady=5, sticky="w")
+        self.entry_val.insert(0, str(self.options[0][1]))
+        self.entry_val.config(state="disabled")
+        
+        # Buttons
+        frame_btns = tk.Frame(self, bg="#1e293b")
+        frame_btns.pack(fill="x", padx=15, pady=20)
+        
+        btn_ok = tk.Button(frame_btns, text="OK", command=self.on_ok, bg="#10b981", fg="white", font=("Segoe UI", 9, "bold"), bd=0, width=10, pady=4)
+        btn_ok.pack(side="right", padx=5)
+        
+        btn_cancel = tk.Button(frame_btns, text="Cancel", command=self.destroy, bg="#334155", fg="white", font=("Segoe UI", 9), bd=0, width=10, pady=4)
+        btn_cancel.pack(side="right", padx=5)
+        
+        # Center in parent
+        self.wait_visibility()
+        parent_geom = parent.geometry()
+        try:
+            parts = parent_geom.split('+')
+            px = int(parts[1])
+            py = int(parts[2])
+            pw, ph = map(int, parts[0].split('x'))
+            cx = px + (pw - 450) // 2
+            cy = py + (ph - 260) // 2
+            self.geometry(f"450x260+{cx}+{cy}")
+        except Exception:
+            pass
+            
+        self.wait_window(self)
+        
+    def on_combo_change(self, event):
+        sel_idx = self.combo.current()
+        val = self.options[sel_idx][1]
+        if val is not None:
+            self.entry_val.config(state="normal")
+            self.entry_val.delete(0, tk.END)
+            self.entry_val.insert(0, str(val))
+            self.entry_val.config(state="disabled")
+        else:
+            self.entry_val.config(state="normal")
+            self.entry_val.delete(0, tk.END)
+            self.entry_val.focus()
+            
+    def on_ok(self):
+        try:
+            self.result = float(self.entry_val.get())
+            self.destroy()
+        except ValueError:
+            messagebox.showerror("Error", "Please enter a valid decimal number for the color index.", parent=self)
+
+
 class FitsManagerApp:
     def __init__(self, root):
         self.root = root
         self.root.title("FitsManager")
         self.root.geometry("1400x870")
+        
+        # Window icon configuration
+        import os
+        icon_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "app_icon.png")
+        if os.path.exists(icon_path):
+            try:
+                self.icon_img = ImageTk.PhotoImage(Image.open(icon_path))
+                self.root.iconphoto(True, self.icon_img)
+            except Exception:
+                pass
         
         # Color palette
         self.bg_color = "#121214"
@@ -394,6 +524,7 @@ class FitsManagerApp:
         # State variables
         self.fits_path = None
         self.fits_header = None
+        self.wcs_saved_to_disk = False
         self.fits_data = None  # Full-res numpy data
         self.debayered_cache = None  # Cached RGB base
         
@@ -411,6 +542,8 @@ class FitsManagerApp:
         self.zoom_level = 1.0
         self.pan_x = 0.0
         self.pan_y = 0.0
+        self.src_left_int = 0
+        self.src_top_int = 0
         self.is_panning = False
         self.pan_start_x = 0
         self.pan_start_y = 0
@@ -437,15 +570,29 @@ class FitsManagerApp:
         
         # Catalog and Photometry attributes
         self.catalog_stars = []
-        self.show_catalog_stars = tk.BooleanVar(value=False)
+        self.show_catalog_stars = tk.BooleanVar(value=True)
         self.asteroid_objects = []
         self.show_asteroids = tk.BooleanVar(value=True)
+        self.calibration_mode = False
+        self.measurement_mode = False
         self.photometry_mode = False
+        self.gaia_search_mode = False
+        self.gaia_search_var = tk.BooleanVar(value=False)
         self.calib_stars = []
         
         # Ensure dss_cache directory exists
         import os
         os.makedirs("dss_cache", exist_ok=True)
+        
+        # Settings loader
+        self.settings_path = "settings.json"
+        self.settings = {}
+        self.load_settings()
+        
+        # Astrometry jobs loader
+        self.jobs_path = "astrometry_jobs.json"
+        self.jobs = {}
+        self.load_jobs()
         
         # DSS Reference Background variables
         self.loaded_dss_tiles = []  # List of loaded DSS tiles: [{'data': dss_data, 'wcs': dss_wcs, 'ra': ra, 'dec': dec, 'width_arcmin': w}]
@@ -478,49 +625,57 @@ class FitsManagerApp:
         
         # File dropdown
         file_menu = tk.Menu(self.menu_bar, tearoff=0)
-        file_menu.add_command(label="Apri FITS...", command=self.load_fits)
-        file_menu.add_command(label="Esporta Immagine...", command=self.export_image)
+        file_menu.add_command(label="Open FITS...", command=self.load_fits)
+        file_menu.add_command(label="Export Image...", command=self.export_image)
         file_menu.add_separator()
-        file_menu.add_command(label="Esci", command=self.root.quit)
+        file_menu.add_command(label="Exit", command=self.root.quit)
         self.menu_bar.add_cascade(label="File", menu=file_menu)
         
-        # View dropdown (Visualizzazione)
+        # View dropdown
         view_menu = tk.Menu(self.menu_bar, tearoff=0)
-        view_menu.add_command(label="Specchia Orizzontale", command=self.toggle_mirror_h)
-        view_menu.add_command(label="Specchia Verticale", command=self.toggle_mirror_v)
+        view_menu.add_command(label="Mirror Horizontal", command=self.toggle_mirror_h)
+        view_menu.add_command(label="Mirror Vertical", command=self.toggle_mirror_v)
         view_menu.add_separator()
-        view_menu.add_checkbutton(label="Scala di Grigi (B&W)", variable=self.var_grayscale, command=lambda: self.process_and_update(is_dragging=False))
-        view_menu.add_checkbutton(label="Inverti Colori (Negativo)", variable=self.var_invert, command=lambda: self.process_and_update(is_dragging=False))
+        view_menu.add_checkbutton(label="Grayscale (B&W)", variable=self.var_grayscale, command=lambda: self.process_and_update(is_dragging=False))
+        view_menu.add_checkbutton(label="Invert Colors (Negative)", variable=self.var_invert, command=lambda: self.process_and_update(is_dragging=False))
         view_menu.add_separator()
         view_menu.add_command(label="Reset Zoom & Pan", command=self.reset_view)
-        self.menu_bar.add_cascade(label="Visualizzazione", menu=view_menu)
+        self.menu_bar.add_cascade(label="View", menu=view_menu)
         
-        # Color Calibration dropdown (Calibrazione)
+        # Color Calibration dropdown
         color_menu = tk.Menu(self.menu_bar, tearoff=0)
         color_menu.add_command(label="Auto Adaptation (Stretch)", command=self.apply_autostretch)
-        color_menu.add_command(label="Sky Background (Neutro)...", command=self.enable_sky_balance)
-        color_menu.add_command(label="White Star (Calibrazione)...", command=self.enable_star_balance)
+        color_menu.add_command(label="Sky Background Calibration...", command=self.enable_sky_balance)
+        color_menu.add_command(label="White Star Calibration...", command=self.enable_star_balance)
         color_menu.add_separator()
-        color_menu.add_command(label="Reset Colori & Curve", command=self.reset_color_manipulation)
-        self.menu_bar.add_cascade(label="Calibrazione Colore", menu=color_menu)
+        color_menu.add_command(label="Reset Colors & Curves", command=self.reset_color_manipulation)
+        self.menu_bar.add_cascade(label="Color Calibration", menu=color_menu)
         
-        # Astrometry dropdown (Astrometria)
+        # Astrometry dropdown
         astrom_menu = tk.Menu(self.menu_bar, tearoff=0)
-        astrom_menu.add_command(label="Segna Target RA/DEC...", command=self.mark_radec_input)
-        astrom_menu.add_separator()
-        astrom_menu.add_command(label="Scarica Stelle Catalogo (Vizier)", command=self.download_catalog_stars)
-        astrom_menu.add_checkbutton(label="Mostra Cerchi Catalogo", variable=self.show_catalog_stars, command=lambda: self.render_canvas(is_dragging=False))
+        astrom_menu.add_command(label="Mark Target RA/Dec...", command=self.mark_radec_input)
+        astrom_menu.add_command(label="Clear Target/Annotations", command=self.clear_annotations)
         astrom_menu.add_separator()
         astrom_menu.add_command(label="Query MPC Asteroids (Mag < 21)", command=self.query_mpc_asteroids)
-        astrom_menu.add_checkbutton(label="Mostra Asteroidi", variable=self.show_asteroids, command=lambda: self.render_canvas(is_dragging=False))
+        astrom_menu.add_checkbutton(label="Show Asteroids", variable=self.show_asteroids, command=lambda: self.render_canvas(is_dragging=False))
         astrom_menu.add_separator()
-        astrom_menu.add_command(label="Download DSS Sky", command=self.download_dss_background)
-        self.menu_bar.add_cascade(label="Astrometria", menu=astrom_menu)
-        
-        # Photometry dropdown (Fotometria)
-        photo_menu = tk.Menu(self.menu_bar, tearoff=0)
-        photo_menu.add_command(label="Attiva/Disattiva Fotometria", command=self.toggle_photometry_mode)
-        self.menu_bar.add_cascade(label="Fotometria", menu=photo_menu)
+        astrom_menu.add_command(label="Download DSS Sky Background", command=self.download_dss_background)
+        astrom_menu.add_separator()
+        astrom_menu.add_command(label="Vizier star plate solver/astroalign (fast)", command=self.platesolve_vizier_astroalign)
+        astrom_menu.add_separator()
+        astrom_menu.add_command(label="Online Plate Solve (Nova Astrometry)", command=self.platesolve_nova_astrometry)
+        astrom_menu.add_command(label="Check Online Solver Status", command=self.check_astrometry_job_status)
+        astrom_menu.add_command(label="Configure Astrometry.net API Key...", command=self.configure_astrometry_api_key)
+        astrom_menu.add_separator()
+        astrom_menu.add_checkbutton(label="Gaia Star Search Mode", variable=self.gaia_search_var, command=self.toggle_gaia_search_mode)
+        astrom_menu.add_separator()
+        astrom_menu.add_command(label="Toggle Mark Calibration Stars", command=self.toggle_calibration_mode)
+        astrom_menu.add_command(label="Toggle Measure Target Star Magnitude", command=self.toggle_measurement_mode)
+        astrom_menu.add_command(label="Download Vizier Calibration Stars", command=self.download_catalog_stars)
+        astrom_menu.add_checkbutton(label="Show Vizier Calibration Stars", variable=self.show_catalog_stars, command=lambda: self.render_canvas(is_dragging=False))
+        astrom_menu.add_command(label="Auto-Calibrate Photometry", command=self.auto_calibrate_photometry)
+        astrom_menu.add_command(label="Clear Calibration Stars", command=self.clear_calibration_stars)
+        self.menu_bar.add_cascade(label="Astrometry", menu=astrom_menu)
 
         # 2. Create Top Toolbar (Single row)
         toolbar_container = tk.Frame(self.root, bg=self.panel_color, bd=0)
@@ -547,20 +702,11 @@ class FitsManagerApp:
         self.btn_annotate = tk.Button(toolbar_row, text="Annotate Mode: Off", command=self.toggle_annotation_mode, bg="#374151", fg="white", font=("Segoe UI", 9), bd=0, padx=12, pady=4)
         self.btn_annotate.pack(side="left", padx=3)
         
-        btn_mark_radec = tk.Button(toolbar_row, text="Mark RA/DEC Target", command=self.mark_radec_input, bg="#4f46e5", fg="white", font=("Segoe UI", 9, "bold"), bd=0, padx=12, pady=4)
-        btn_mark_radec.pack(side="left", padx=10)
+        self.btn_calibration = tk.Button(toolbar_row, text="Mark Calib Stars: Off", command=self.toggle_calibration_mode, bg="#374151", fg="white", font=("Segoe UI", 9), bd=0, padx=12, pady=4)
+        self.btn_calibration.pack(side="left", padx=3)
         
-        self.btn_catalog = tk.Button(toolbar_row, text="Download Catalog Stars", command=self.download_catalog_stars, bg="#0891b2", fg="white", font=("Segoe UI", 9, "bold"), bd=0, padx=12, pady=4)
-        self.btn_catalog.pack(side="left", padx=3)
-        
-        self.chk_show_catalog = tk.Checkbutton(toolbar_row, text="Show Stars Overlay", variable=self.show_catalog_stars, command=lambda: self.render_canvas(is_dragging=False), bg=self.panel_color, fg=self.text_color, selectcolor=self.control_bg, activebackground=self.panel_color, activeforeground=self.text_color)
-        self.chk_show_catalog.pack(side="left", padx=5)
-        
-        self.btn_photometry = tk.Button(toolbar_row, text="Photometry Mode: Off", command=self.toggle_photometry_mode, bg="#374151", fg="white", font=("Segoe UI", 9), bd=0, padx=12, pady=4)
-        self.btn_photometry.pack(side="left", padx=3)
-        
-        self.btn_dss = tk.Button(toolbar_row, text="Download DSS Sky", command=self.download_dss_background, bg="#6366f1", fg="white", font=("Segoe UI", 9, "bold"), bd=0, padx=12, pady=4)
-        self.btn_dss.pack(side="left", padx=10)
+        self.btn_measurement = tk.Button(toolbar_row, text="Measure Target: Off", command=self.toggle_measurement_mode, bg="#374151", fg="white", font=("Segoe UI", 9), bd=0, padx=12, pady=4)
+        self.btn_measurement.pack(side="left", padx=3)
         
         btn_export = tk.Button(toolbar_row, text="Export Image", command=self.export_image, bg="#10b981", fg="white", font=("Segoe UI", 10, "bold"), bd=0, padx=16, pady=5)
         btn_export.pack(side="right", padx=10)
@@ -630,6 +776,11 @@ class FitsManagerApp:
         self.lbl_epoch_status = ttk.Label(coord_lf, text="Header epoch: J2000 (detected)", font=("Segoe UI", 8, "italic"))
         self.lbl_epoch_status.pack(anchor="w", padx=5, pady=2)
         
+        self.btn_save_wcs_header = ttk.Button(coord_lf, text="Save WCS to FITS Header", command=self.save_wcs_to_fits_file)
+        # We won't pack it initially; update_wcs_hint_visibility will manage it
+        
+        self.lbl_wcs_hint = tk.Label(coord_lf, text="⚠️ No WCS projection found\nTry: Astrometry -> Plate Solve", bg="black", fg="#facc15", font=("Segoe UI", 9, "bold"), bd=1, relief="solid", padx=5, pady=5, justify="center")
+        
         # Debayer Settings
         debayer_lf = ttk.LabelFrame(scrollable_frame, text="Debayer")
         debayer_lf.pack(fill="x", padx=10, pady=5)
@@ -667,6 +818,43 @@ class FitsManagerApp:
         self.var_log_hist = tk.BooleanVar(value=True)
         self.chk_log_hist = ttk.Checkbutton(curves_lf, text="Logarithmic Histogram", variable=self.var_log_hist, command=self.on_log_hist_changed)
         self.chk_log_hist.pack(anchor="w", padx=5, pady=5)
+        
+        # Color Balance & Sliders (under curves_lf)
+        sliders_lf = ttk.LabelFrame(scrollable_frame, text="Color Balance & Levels")
+        sliders_lf.pack(fill="x", padx=10, pady=5)
+        
+        self.slider_red_offset = tk.Scale(sliders_lf, from_=-100, to=100, orient="horizontal", label="Red Shift", bg=self.panel_color, fg=self.text_color, highlightthickness=0, bd=0, command=lambda v: self.process_and_update(is_dragging=True))
+        self.slider_red_offset.set(0)
+        self.slider_red_offset.pack(fill="x", padx=5, pady=2)
+        self.slider_red_offset.bind("<ButtonRelease-1>", lambda e: self.process_and_update(is_dragging=False))
+        
+        self.slider_green_offset = tk.Scale(sliders_lf, from_=-100, to=100, orient="horizontal", label="Green Shift", bg=self.panel_color, fg=self.text_color, highlightthickness=0, bd=0, command=lambda v: self.process_and_update(is_dragging=True))
+        self.slider_green_offset.set(0)
+        self.slider_green_offset.pack(fill="x", padx=5, pady=2)
+        self.slider_green_offset.bind("<ButtonRelease-1>", lambda e: self.process_and_update(is_dragging=False))
+        
+        self.slider_blue_offset = tk.Scale(sliders_lf, from_=-100, to=100, orient="horizontal", label="Blue Shift", bg=self.panel_color, fg=self.text_color, highlightthickness=0, bd=0, command=lambda v: self.process_and_update(is_dragging=True))
+        self.slider_blue_offset.set(0)
+        self.slider_blue_offset.pack(fill="x", padx=5, pady=2)
+        self.slider_blue_offset.bind("<ButtonRelease-1>", lambda e: self.process_and_update(is_dragging=False))
+        
+        self.slider_brightness = tk.Scale(sliders_lf, from_=-100, to=100, orient="horizontal", label="Brightness", bg=self.panel_color, fg=self.text_color, highlightthickness=0, bd=0, command=lambda v: self.process_and_update(is_dragging=True))
+        self.slider_brightness.set(0)
+        self.slider_brightness.pack(fill="x", padx=5, pady=2)
+        self.slider_brightness.bind("<ButtonRelease-1>", lambda e: self.process_and_update(is_dragging=False))
+        
+        self.slider_contrast = tk.Scale(sliders_lf, from_=-100, to=100, orient="horizontal", label="Contrast", bg=self.panel_color, fg=self.text_color, highlightthickness=0, bd=0, command=lambda v: self.process_and_update(is_dragging=True))
+        self.slider_contrast.set(0)
+        self.slider_contrast.pack(fill="x", padx=5, pady=2)
+        self.slider_contrast.bind("<ButtonRelease-1>", lambda e: self.process_and_update(is_dragging=False))
+        
+        self.slider_smooth = tk.Scale(sliders_lf, from_=0, to=10, orient="horizontal", label="Smooth / Denoise (Gaussian)", bg=self.panel_color, fg=self.text_color, highlightthickness=0, bd=0, command=lambda v: self.process_and_update(is_dragging=True))
+        self.slider_smooth.set(0)
+        self.slider_smooth.pack(fill="x", padx=5, pady=2)
+        self.slider_smooth.bind("<ButtonRelease-1>", lambda e: self.process_and_update(is_dragging=False))
+        
+        btn_reset_sliders = tk.Button(sliders_lf, text="Reset Sliders", command=self.reset_sliders, bg=self.accent_color, fg="white", font=("Segoe UI", 9), bd=0, pady=4)
+        btn_reset_sliders.pack(fill="x", padx=5, pady=5)
         
         # Canvas Container Frame (Right Panel) holding Canvas and scrollbars
         canvas_container = tk.Frame(right_panel, bg=self.bg_color)
@@ -884,6 +1072,7 @@ class FitsManagerApp:
                 
                 self.fits_path = file_path
                 self.fits_header = hdu.header
+                self.wcs_saved_to_disk = ("CRVAL1" in self.fits_header)
                 self.fits_data = hdu.data.astype(np.float32)
                 self.debayered_cache = None
                 self.temp_marker = None
@@ -943,10 +1132,26 @@ class FitsManagerApp:
                     if key not in important_keys and key.strip() != "":
                         self.meta_tree.insert("", "end", text=key, values=(str(val),))
                 
-                try:
-                    self.wcs = WCS(self.fits_header, naxis=2)
-                except Exception:
-                    self.wcs = None
+                job_info = self.jobs.get(self.fits_path, {})
+                if job_info.get("status") == "success" and "wcs" in job_info:
+                    try:
+                        cached_header = fits.Header()
+                        for k, v in job_info["wcs"].items():
+                            cached_header[k] = v
+                        self.wcs = WCS(cached_header)
+                        if self.wcs and not self.wcs.has_celestial:
+                            self.wcs = None
+                    except Exception:
+                        self.wcs = None
+                else:
+                    try:
+                        self.wcs = WCS(self.fits_header, naxis=2)
+                        if self.wcs and not self.wcs.has_celestial:
+                            self.wcs = None
+                    except Exception:
+                        self.wcs = None
+                
+                self.update_wcs_hint_visibility()
                 
                 epoch_val = self.fits_header.get('EQUINOX', 2000.0)
                 if epoch_val == 2000.0:
@@ -1129,6 +1334,41 @@ class FitsManagerApp:
         img_processed[:, :, 0] = lut_r_65536[img_16u[:, :, 0]]
         img_processed[:, :, 1] = lut_g_65536[img_16u[:, :, 1]]
         img_processed[:, :, 2] = lut_b_65536[img_16u[:, :, 2]]
+        
+        # Apply Slider adjustments (Color Shifts, Brightness, Contrast) on the STRETCHED 8-bit image
+        r_offset = self.slider_red_offset.get() / 100.0
+        g_offset = self.slider_green_offset.get() / 100.0
+        b_offset = self.slider_blue_offset.get() / 100.0
+        brightness = self.slider_brightness.get() / 100.0
+        contrast = self.slider_contrast.get() / 100.0
+        
+        img_float = img_processed.astype(np.float32) / 255.0
+        
+        # Apply red, green, blue shifts
+        img_float[:, :, 0] += r_offset
+        img_float[:, :, 1] += g_offset
+        img_float[:, :, 2] += b_offset
+        
+        # Apply brightness
+        if brightness != 0.0:
+            img_float += brightness
+            
+        # Apply contrast
+        if contrast != 0.0:
+            if contrast >= 0.0:
+                factor = 1.0 + contrast * 3.0
+            else:
+                factor = 1.0 + contrast
+            img_float = (img_float - 0.5) * factor + 0.5
+            
+        img_float = np.clip(img_float, 0.0, 1.0)
+        img_processed = (img_float * 255.0).astype(np.uint8)
+        
+        # Apply Gaussian Smoothing filter to "clean" background noise if enabled
+        smooth_val = self.slider_smooth.get()
+        if smooth_val > 0:
+            ksize = 2 * smooth_val + 1
+            img_processed = cv2.GaussianBlur(img_processed, (ksize, ksize), 0)
         
         # 3b. Convert to Grayscale (B&W) if toggled
         if self.var_grayscale.get():
@@ -1418,6 +1658,9 @@ class FitsManagerApp:
         src_right_int = max(0, min(w, src_right_int))
         src_bottom_int = max(0, min(h, src_bottom_int))
         
+        self.src_left_int = src_left_int
+        self.src_top_int = src_top_int
+        
         crop_w_src = src_right_int - src_left_int
         crop_h_src = src_bottom_int - src_top_int
         
@@ -1542,8 +1785,29 @@ class FitsManagerApp:
             ty = int(ry * new_h) - int(src_top_int * total_scale)
             
             if 0 <= tx < crop_new_w and 0 <= ty < crop_new_h:
-                self.draw_star_crosshair(draw, tx, ty, size=32, width=2)
-                draw.text((tx + 34, ty + 34), f"Target: RA={self.temp_marker['ra']}\nDEC={self.temp_marker['dec']}", fill="#f43f5e")
+                if self.temp_marker.get('type') == 'gaia_query':
+                    r = 10
+                    draw.rectangle([tx - r, ty - r, tx + r, ty + r], outline=self.green_bright, width=2)
+                    draw.text((tx + 15, ty - 8), "Gaia Query Target", fill=self.green_bright)
+                    
+                    if self.temp_marker.get('catalog_ratio_x') is not None:
+                        cx_r = self.temp_marker['catalog_ratio_x']
+                        cy_r = self.temp_marker['catalog_ratio_y']
+                        if self.mirror_horizontal:
+                            cx_r = 1.0 - cx_r
+                        if self.mirror_vertical:
+                            cy_r = 1.0 - cy_r
+                        cx_c = int(cx_r * new_w) - int(src_left_int * total_scale)
+                        cy_c = int(cy_r * new_h) - int(src_top_int * total_scale)
+                        
+                        if 0 <= cx_c < crop_new_w and 0 <= cy_c < crop_new_h:
+                            size = 6
+                            draw.line([cx_c - size, cy_c - size, cx_c + size, cy_c + size], fill="#ef4444", width=2)
+                            draw.line([cx_c - size, cy_c + size, cx_c + size, cy_c - size], fill="#ef4444", width=2)
+                            draw.text((cx_c + 8, cy_c - 8), "Gaia Star Position", fill="#ef4444")
+                else:
+                    self.draw_star_crosshair(draw, tx, ty, size=32, width=2)
+                    draw.text((tx + 34, ty + 34), f"Target: RA={self.temp_marker['ra']}\nDEC={self.temp_marker['dec']}", fill="#f43f5e")
             
         # 3. Draw Catalog Stars Overlay (cyan circles)
         if self.show_catalog_stars.get() and self.catalog_stars and self.wcs:
@@ -1571,9 +1835,14 @@ class FitsManagerApp:
                         
                         if 0 <= sx < crop_new_w and 0 <= sy < crop_new_h:
                             r_star = 8
-                            # Cyan outline for catalog stars
-                            draw.ellipse([sx - r_star, sy - r_star, sx + r_star, sy + r_star], outline="#06b6d4", width=1)
-                            draw.text((sx + 10, sy - 8), f"{star['mag']:.2f}", fill="#06b6d4")
+                            if star.get('is_variable'):
+                                # Red outline for variable stars, label with "V:"
+                                draw.ellipse([sx - r_star, sy - r_star, sx + r_star, sy + r_star], outline="#ef4444", width=1)
+                                draw.text((sx + 10, sy - 8), f"V:{star['mag']:.2f}", fill="#ef4444")
+                            else:
+                                # Electric blue outline for catalog stars
+                                draw.ellipse([sx - r_star, sy - r_star, sx + r_star, sy + r_star], outline="#2979ff", width=1)
+                                draw.text((sx + 10, sy - 8), f"{star['mag']:.2f}", fill="#2979ff")
                 except Exception:
                     continue
                     
@@ -1662,8 +1931,8 @@ class FitsManagerApp:
         canvas_x = event.x - self.img_offset_x
         canvas_y = event.y - self.img_offset_y
         
-        w_px = int(canvas_x / self.img_scale_ratio)
-        h_px = int(canvas_y / self.img_scale_ratio)
+        w_px = int(canvas_x / self.img_scale_ratio) + self.src_left_int
+        h_px = int(canvas_y / self.img_scale_ratio) + self.src_top_int
         
         h_orig, w_orig = self.fits_data.shape[-2:]
         
@@ -1751,41 +2020,67 @@ class FitsManagerApp:
             
         h, w = img_to_draw.shape[:2]
         
-        # Photometry Mode Click Logic
-        if self.photometry_mode and 0 <= canvas_x < self.img_scale_ratio * w and 0 <= canvas_y < self.img_scale_ratio * h:
-            px_x = int(canvas_x / self.img_scale_ratio)
-            px_y = int(canvas_y / self.img_scale_ratio)
-            
+        # Gaia Star Query Mode Click Logic
+        if getattr(self, 'gaia_search_mode', False):
             h_orig, w_orig = self.debayered_cache.shape[:2]
-            px_x = int(px_x * (w_orig / w))
-            px_y = int(px_y * (h_orig / h))
+            px_x = int(canvas_x / self.img_scale_ratio) + self.src_left_int
+            px_y = int(canvas_y / self.img_scale_ratio) + self.src_top_int
             
-            if self.mirror_horizontal:
-                px_x = (w_orig - 1) - px_x
-            if self.mirror_vertical:
-                px_y = (h_orig - 1) - px_y
+            if 0 <= px_x < w_orig and 0 <= px_y < h_orig:
+                if self.mirror_horizontal:
+                    px_x = (w_orig - 1) - px_x
+                if self.mirror_vertical:
+                    px_y = (h_orig - 1) - px_y
+                    
+                self.handle_gaia_search_click(px_x, px_y)
+                return
                 
-            self.handle_photometry_click(px_x, px_y)
-            return
+        # Calibration Mode Click Logic
+        if getattr(self, 'calibration_mode', False):
+            h_orig, w_orig = self.debayered_cache.shape[:2]
+            px_x = int(canvas_x / self.img_scale_ratio) + self.src_left_int
+            px_y = int(canvas_y / self.img_scale_ratio) + self.src_top_int
+            
+            if 0 <= px_x < w_orig and 0 <= px_y < h_orig:
+                if self.mirror_horizontal:
+                    px_x = (w_orig - 1) - px_x
+                if self.mirror_vertical:
+                    px_y = (h_orig - 1) - px_y
+                    
+                self.handle_calibration_click(px_x, px_y)
+                return
+                
+        # Measurement Mode Click Logic
+        if getattr(self, 'measurement_mode', False):
+            h_orig, w_orig = self.debayered_cache.shape[:2]
+            px_x = int(canvas_x / self.img_scale_ratio) + self.src_left_int
+            px_y = int(canvas_y / self.img_scale_ratio) + self.src_top_int
+            
+            if 0 <= px_x < w_orig and 0 <= px_y < h_orig:
+                if self.mirror_horizontal:
+                    px_x = (w_orig - 1) - px_x
+                if self.mirror_vertical:
+                    px_y = (h_orig - 1) - px_y
+                    
+                self.handle_measurement_click(px_x, px_y)
+                return
             
         # Color Balance Sampler Point Click Logic
-        if self.balance_mode != "None" and 0 <= canvas_x < self.img_scale_ratio * w and 0 <= canvas_y < self.img_scale_ratio * h:
-            px_x = int(canvas_x / self.img_scale_ratio)
-            px_y = int(canvas_y / self.img_scale_ratio)
-            
+        if self.balance_mode != "None":
             h_orig, w_orig = self.debayered_cache.shape[:2]
-            px_x = int(px_x * (w_orig / w))
-            px_y = int(px_y * (h_orig / h))
+            px_x = int(canvas_x / self.img_scale_ratio) + self.src_left_int
+            px_y = int(canvas_y / self.img_scale_ratio) + self.src_top_int
             
-            if self.mirror_horizontal:
-                px_x = (w_orig - 1) - px_x
-            if self.mirror_vertical:
-                px_y = (h_orig - 1) - px_y
-                
-            # Sample a larger 10x10 pixel patch
-            x_min, x_max = max(0, px_x - 5), min(w_orig, px_x + 5)
-            y_min, y_max = max(0, px_y - 5), min(h_orig, px_y + 5)
-            patch = self.debayered_cache[y_min:y_max, x_min:x_max] # shape (H, W, 3)
+            if 0 <= px_x < w_orig and 0 <= px_y < h_orig:
+                if self.mirror_horizontal:
+                    px_x = (w_orig - 1) - px_x
+                if self.mirror_vertical:
+                    px_y = (h_orig - 1) - px_y
+                    
+                # Sample a larger 10x10 pixel patch
+                x_min, x_max = max(0, px_x - 5), min(w_orig, px_x + 5)
+                y_min, y_max = max(0, px_y - 5), min(h_orig, px_y + 5)
+                patch = self.debayered_cache[y_min:y_max, x_min:x_max] # shape (H, W, 3)
             
             global_min = self.debayered_cache.min()
             global_max = self.debayered_cache.max()
@@ -1879,46 +2174,38 @@ class FitsManagerApp:
             if self.crop_mode:
                 self.crop_start = (event.x, event.y)
             elif self.annotation_mode:
+                ratio_x = canvas_x / (self.img_scale_ratio * w)
+                ratio_y = canvas_y / (self.img_scale_ratio * h)
+                
+                if self.mirror_horizontal:
+                    ratio_x = 1.0 - ratio_x
+                if self.mirror_vertical:
+                    ratio_y = 1.0 - ratio_y
+                
+                initial_val = ""
+                if self.wcs:
+                    try:
+                        h_orig, w_orig = self.fits_data.shape[-2:]
+                        orig_px_x = int(ratio_x * w_orig)
+                        orig_px_y = int(ratio_y * h_orig)
+                        
+                        sky_coord = self.wcs.pixel_to_world(orig_px_x, orig_px_y)
+                        coord_j2000 = sky_coord.transform_to(FK5(equinox='J2000'))
+                        
+                        ra_str = coord_j2000.ra.to_string(unit="hour", sep="hms", precision=1)
+                        dec_str = coord_j2000.dec.to_string(unit="degree", sep="dms", precision=1)
+                        initial_val = f"RA:{ra_str} DEC:{dec_str}"
+                    except Exception:
+                        pass
+                
                 import tkinter.simpledialog as sd
-                text = sd.askstring("Add Annotation", "Star description:", parent=self.root)
+                text = sd.askstring("Add Annotation", "Star description / Coordinates:", parent=self.root, initialvalue=initial_val)
                 if text is not None and text.strip() != "":
                     self.push_state()
-                    ratio_x = canvas_x / (self.img_scale_ratio * w)
-                    ratio_y = canvas_y / (self.img_scale_ratio * h)
-                    
-                    if self.mirror_horizontal:
-                        ratio_x = 1.0 - ratio_x
-                    if self.mirror_vertical:
-                        ratio_y = 1.0 - ratio_y
-                        
-                    final_text = text.strip()
-                    
-                    # Resolve J2000 coordinates if WCS is available
-                    if self.wcs:
-                        try:
-                            # Map canonical ratios back to original pixel coordinates
-                            h_orig, w_orig = self.fits_data.shape[-2:]
-                            orig_px_x = int(ratio_x * w_orig)
-                            orig_px_y = int(ratio_y * h_orig)
-                            
-                            sky_coord = self.wcs.pixel_to_world(orig_px_x, orig_px_y)
-                            coord_j2000 = sky_coord.transform_to(FK5(equinox='J2000'))
-                            
-                            ra_str = coord_j2000.ra.to_string(unit="hour", sep="hms", precision=1)
-                            dec_str = coord_j2000.dec.to_string(unit="degree", sep="dms", precision=1)
-                            
-                            append_coords = messagebox.askyesno("Include Coordinates", 
-                                                                f"Do you want to append J2000 RA/DEC coordinates to this annotation?\n\n({ra_str}, {dec_str})", 
-                                                                parent=self.root)
-                            if append_coords:
-                                final_text = f"{final_text} (RA:{ra_str} DEC:{dec_str})"
-                        except Exception:
-                            pass
-                        
                     self.annotations.append({
                         'x': ratio_x,
                         'y': ratio_y,
-                        'text': final_text
+                        'text': text.strip()
                     })
                     self.render_canvas(is_dragging=False)
 
@@ -2180,23 +2467,27 @@ class FitsManagerApp:
         except Exception as e:
             messagebox.showerror("Error", f"Failed to export image:\n{str(e)}")
 
-    def toggle_photometry_mode(self):
+    def toggle_calibration_mode(self):
         if self.fits_data is None:
             messagebox.showerror("Error", "Load a FITS file first.")
             return
             
-        self.photometry_mode = not self.photometry_mode
-        if self.photometry_mode:
+        self.calibration_mode = not self.calibration_mode
+        if self.calibration_mode:
+            self.measurement_mode = False
             self.crop_mode = False
             self.annotation_mode = False
             self.balance_mode = "None"
+            self.gaia_search_mode = False
+            self.gaia_search_var.set(False)
             self.btn_crop.config(text="Crop Mode: Off", bg="#374151")
             self.btn_annotate.config(text="Annotate Mode: Off", bg="#374151")
+            self.btn_measurement.config(text="Measure Target: Off", bg="#374151")
             if self.btn_bal_sky:
                 self.btn_bal_sky.config(bg="#374151")
             if self.btn_bal_star:
                 self.btn_bal_star.config(bg="#374151")
-            self.btn_photometry.config(text="Photometry Mode: Active", bg="#16a34a")
+            self.btn_calibration.config(text="Mark Calib Stars: On", bg="#16a34a")
             self.canvas.config(cursor="crosshair")
             
             if len(self.catalog_stars) == 0:
@@ -2204,9 +2495,41 @@ class FitsManagerApp:
                 if download:
                     self.download_catalog_stars()
         else:
-            self.btn_photometry.config(text="Photometry Mode: Off", bg="#374151")
+            self.btn_calibration.config(text="Mark Calib Stars: Off", bg="#374151")
             self.canvas.config(cursor="")
-            self.calib_stars.clear()
+            self.render_canvas(is_dragging=False)
+
+    def toggle_measurement_mode(self):
+        if self.fits_data is None:
+            messagebox.showerror("Error", "Load a FITS file first.")
+            return
+            
+        self.measurement_mode = not self.measurement_mode
+        if self.measurement_mode:
+            self.calibration_mode = False
+            self.crop_mode = False
+            self.annotation_mode = False
+            self.balance_mode = "None"
+            self.gaia_search_mode = False
+            self.gaia_search_var.set(False)
+            self.btn_crop.config(text="Crop Mode: Off", bg="#374151")
+            self.btn_annotate.config(text="Annotate Mode: Off", bg="#374151")
+            self.btn_calibration.config(text="Mark Calib Stars: Off", bg="#374151")
+            if self.btn_bal_sky:
+                self.btn_bal_sky.config(bg="#374151")
+            if self.btn_bal_star:
+                self.btn_bal_star.config(bg="#374151")
+            self.btn_measurement.config(text="Measure Target: On", bg="#16a34a")
+            self.canvas.config(cursor="crosshair")
+            
+            if len(self.calib_stars) == 0:
+                messagebox.showwarning("Photometry", 
+                                       "Please select at least one catalog calibration star first to establish the zero-point of the image.\n"
+                                       "You can use 'Auto-Calibrate Photometry' or manually click catalog stars with 'Mark Calib Stars' active.",
+                                       parent=self.root)
+        else:
+            self.btn_measurement.config(text="Measure Target: Off", bg="#374151")
+            self.canvas.config(cursor="")
             self.render_canvas(is_dragging=False)
 
     def download_catalog_stars(self):
@@ -2293,7 +2616,7 @@ class FitsManagerApp:
                 log_msg(f"\n[QUERY] Connecting to mirror: {host}...")
                 
                 # 1. Try APASS DR9
-                url = f"https://{host}/viz-bin/asu-tsv?-source=II/336/apass9&-c={c_str}&-c.r={radius_arcmin:f}&-c.u=arcmin&-out.form=|&-out.add=RAJ2000,DEJ2000&-out=Vmag&-sort=_r&-out.max=1000"
+                url = f"https://{host}/viz-bin/asu-tsv?-source=II/336/apass9&-c={c_str}&-c.r={radius_arcmin:f}&-c.u=arcmin&-out.form=|&-out.add=RAJ2000,DEJ2000&-out=Vmag,Bmag,e_Vmag,e_Bmag&-sort=_r&-out.max=1000"
                 log_msg(f"[QUERY] Sending APASS request:\n  {url}")
                 req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
                 
@@ -2317,7 +2640,7 @@ class FitsManagerApp:
                     
                 # 2. Try Gaia DR3 if APASS returned nothing or failed
                 if len(lines) == 0:
-                    url = f"https://{host}/viz-bin/asu-tsv?-source=I/355/gaiadr3&-c={c_str}&-c.r={radius_arcmin:f}&-c.u=arcmin&-out.form=|&-out.add=RA_ICRS,DE_ICRS&-out=Gmag&-sort=_r&-out.max=1000"
+                    url = f"https://{host}/viz-bin/asu-tsv?-source=I/355/gaiadr3&-c={c_str}&-c.r={radius_arcmin:f}&-c.u=arcmin&-out.form=|&-out.add=RA_ICRS,DE_ICRS&-out=Gmag,bp_rp,phot_variable_flag&-sort=_r&-out.max=1000"
                     log_msg(f"[QUERY] APASS failed. Trying Gaia DR3 query:\n  {url}")
                     req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
                     try:
@@ -2359,19 +2682,72 @@ class FitsManagerApp:
                         try:
                             ra_idx = cols.get("RAJ2000", cols.get("_RAJ2000", cols.get("RA_ICRS", cols.get("_RA_ICRS", 0))))
                             dec_idx = cols.get("DEJ2000", cols.get("_DEJ2000", cols.get("DE_ICRS", cols.get("_DE_ICRS", 1))))
-                            mag_idx = cols.get("Vmag", cols.get("Gmag", cols.get("Phot.G", 2)))
                             
                             ra_star = float(parts[ra_idx])
                             dec_star = float(parts[dec_idx])
-                            mag_str = parts[mag_idx].strip()
-                            if mag_str and mag_str != "" and mag_str != "---":
-                                mag = float(mag_str)
+                            
+                            is_variable = False
+                            color_index = 0.0
+                            mag = 0.0
+                            
+                            if "Vmag" in cols:
+                                v_idx = cols["Vmag"]
+                                b_idx = cols.get("Bmag")
+                                ev_idx = cols.get("e_Vmag")
+                                eb_idx = cols.get("e_Bmag")
+                                
+                                mag_str = parts[v_idx].strip()
+                                if mag_str and mag_str != "" and mag_str != "---":
+                                    mag = float(mag_str)
+                                else:
+                                    continue
+                                    
+                                b_str = parts[b_idx].strip() if b_idx is not None else ""
+                                ev_str = parts[ev_idx].strip() if ev_idx is not None else ""
+                                eb_str = parts[eb_idx].strip() if eb_idx is not None else ""
+                                
+                                if b_str and b_str != "" and b_str != "---":
+                                    color_index = float(b_str) - mag
+                                else:
+                                    color_index = 0.6
+                                    
+                                if ev_str and ev_str != "" and ev_str != "---":
+                                    if float(ev_str) > 0.15:
+                                        is_variable = True
+                                if eb_str and eb_str != "" and eb_str != "---":
+                                    if float(eb_str) > 0.15:
+                                        is_variable = True
                             else:
-                                continue
+                                g_idx = cols.get("Gmag", cols.get("Phot.G", 2))
+                                bprp_idx = cols.get("bp_rp")
+                                var_idx = cols.get("phot_variable_flag")
+                                
+                                mag_str = parts[g_idx].strip()
+                                if mag_str and mag_str != "" and mag_str != "---":
+                                    mag = float(mag_str)
+                                else:
+                                    continue
+                                    
+                                if bprp_idx is not None:
+                                    bprp_str = parts[bprp_idx].strip()
+                                    if bprp_str and bprp_str != "" and bprp_str != "---":
+                                        color_index = float(bprp_str)
+                                    else:
+                                        color_index = 0.8
+                                else:
+                                    color_index = 0.8
+                                    
+                                if var_idx is not None:
+                                    var_str = parts[var_idx].strip()
+                                    if "VARIABLE" in var_str:
+                                        is_variable = True
+                                        
                             host_stars.append({
                                 'ra': ra_star,
                                 'dec': dec_star,
-                                'mag': mag
+                                'mag': mag,
+                                'color_index': color_index,
+                                'is_variable': is_variable
                             })
                         except Exception:
                             continue
@@ -2409,6 +2785,11 @@ class FitsManagerApp:
             self.render_canvas(is_dragging=False)
             log_msg(f"\n[SUCCESS] Download completed! {len(catalog_stars)} stars catalogued.")
             messagebox.showinfo("Catalog", f"Successfully downloaded {len(catalog_stars)} stars from Vizier catalog.")
+            
+            if len(catalog_stars) > 0:
+                auto_cal = messagebox.askyesno("Auto-Calibration", "Would you like to run 'Auto-Calibrate Photometry' right now using these downloaded stars?", parent=self.root)
+                if auto_cal:
+                    self.auto_calibrate_photometry()
             
         except Exception as e:
             log_msg(f"\n[ERROR] Process failed: {e}")
@@ -2541,7 +2922,9 @@ class FitsManagerApp:
             self.root.config(cursor="")
 
     def find_centroid(self, data, px, py, box_radius=5):
-        iy, ix = int(round(py)), int(round(px))
+        px_val = float(np.atleast_1d(px)[0])
+        py_val = float(np.atleast_1d(py)[0])
+        iy, ix = int(round(py_val)), int(round(px_val))
         h, w = data.shape
         y_min, y_max = max(0, iy - box_radius), min(h, iy + box_radius + 1)
         x_min, x_max = max(0, ix - box_radius), min(w, ix + box_radius + 1)
@@ -2576,10 +2959,16 @@ class FitsManagerApp:
         net_flux = source_sum - (num_source_pixels * bg_level)
         return max(0.0001, net_flux), centroid_x, centroid_y
 
-    def handle_photometry_click(self, px_x, px_y):
+    def handle_calibration_click(self, px_x, px_y):
         h_orig, w_orig = self.debayered_cache.shape[:2]
         img_gray = 0.2126 * self.debayered_cache[:,:,0] + 0.7152 * self.debayered_cache[:,:,1] + 0.0722 * self.debayered_cache[:,:,2]
         flux, cx, cy = self.measure_aperture_flux(img_gray, px_x, px_y)
+        
+        if flux <= 1.0:
+            messagebox.showwarning("Calibration Warning", 
+                                   f"Measured net flux is too low or negative ({flux:.1f}). This star cannot be used for calibration.", 
+                                   parent=self.root)
+            return
         
         matched_star = None
         if self.wcs:
@@ -2593,64 +2982,234 @@ class FitsManagerApp:
                     matched_star = star
                     
         if matched_star is not None:
-            if any(np.hypot(s['x'] - cx, s['y'] - cy) < 5 for s in self.calib_stars):
-                messagebox.showinfo("Photometry", "This star is already in the calibration set.")
+            if matched_star.get('is_variable'):
+                messagebox.showwarning("Stella Variabile", 
+                                       "Questa stella è contrassegnata come variabile e non può essere usata per la calibrazione fotometrica.", 
+                                       parent=self.root)
                 return
+            existing_idx = None
+            for idx, s in enumerate(self.calib_stars):
+                if np.hypot(s['x'] - cx, s['y'] - cy) < 5:
+                    existing_idx = idx
+                    break
+            if existing_idx is not None:
+                self.calib_stars.pop(existing_idx)
+                self.render_canvas(is_dragging=False)
+                messagebox.showinfo("Photometry Calibration", 
+                                    f"Removed calibration star.\n"
+                                    f"Total calibration stars: {len(self.calib_stars)}")
+                return
+            flux_r, _, _ = self.measure_aperture_flux(self.debayered_cache[:,:,0], px_x, px_y)
+            flux_b, _, _ = self.measure_aperture_flux(self.debayered_cache[:,:,2], px_x, px_y)
             self.calib_stars.append({
                 'x': cx,
                 'y': cy,
                 'flux': flux,
-                'mag': matched_star['mag']
+                'flux_r': flux_r,
+                'flux_b': flux_b,
+                'mag': matched_star['mag'],
+                'color_index': matched_star.get('color_index', 0.0)
             })
             self.render_canvas(is_dragging=False)
-            messagebox.showinfo("Photometry", 
+            messagebox.showinfo("Photometry Calibration", 
                                 f"Added Calibration Star:\n"
                                 f"Catalog Magnitude: {matched_star['mag']:.2f}\n"
                                 f"Measured Net Flux: {flux:.1f}\n"
                                 f"Total calibration stars: {len(self.calib_stars)}")
         else:
-            measure_target = messagebox.askyesno("Photometry", 
-                                                 "No catalog star found near this coordinate.\n"
-                                                 "Do you want to measure this star as the Unknown Target Star?",
-                                                 parent=self.root)
-            if measure_target:
-                if len(self.calib_stars) == 0:
-                    messagebox.showwarning("Photometry", 
-                                           "Please select at least one catalog calibration star (cyan circle) first to establish the zero-point of the image.")
-                    return
-                    
-                zp_list = []
-                for s in self.calib_stars:
-                    zp_val = s['mag'] + 2.5 * np.log10(s['flux'])
-                    zp_list.append(zp_val)
-                    
-                zp = np.mean(zp_list)
-                mag_u = -2.5 * np.log10(flux) + zp
+            messagebox.showwarning("Calibration Error", 
+                                   "No catalog star found near this coordinate to use for calibration.\n"
+                                   "Ensure catalog stars overlay is visible and you click close to a catalog star circle.",
+                                   parent=self.root)
+
+    def handle_measurement_click(self, px_x, px_y):
+        if len(self.calib_stars) == 0:
+            messagebox.showwarning("Measurement Error", 
+                                   "Please establish the zero-point calibration first.\n"
+                                   "Either use 'Auto-Calibrate Photometry' or manually add calibration stars using 'Mark Calib Stars'.",
+                                   parent=self.root)
+            return
+
+        h_orig, w_orig = self.debayered_cache.shape[:2]
+        img_gray = 0.2126 * self.debayered_cache[:,:,0] + 0.7152 * self.debayered_cache[:,:,1] + 0.0722 * self.debayered_cache[:,:,2]
+        flux, cx, cy = self.measure_aperture_flux(img_gray, px_x, px_y)
+        
+        if flux <= 1.0:
+            messagebox.showwarning("Measurement Warning", 
+                                   f"Measured net flux is too low or negative ({flux:.1f}). Cannot measure magnitude.", 
+                                   parent=self.root)
+            return
+            
+        zp_list = []
+        for s in self.calib_stars:
+            zp_val = s['mag'] + 2.5 * np.log10(s['flux'])
+            zp_list.append(zp_val)
+            
+        num_calib = len(self.calib_stars)
+        has_color_correction = False
+        zp = np.mean(zp_list)
+        c1 = 0.0
+        
+        if num_calib >= 3:
+            colors = np.array([s.get('color_index', 0.0) for s in self.calib_stars])
+            zps = np.array(zp_list)
+            try:
+                slope, intercept = np.polyfit(colors, zps, 1)
+                c1 = slope
+                zp = intercept
+                has_color_correction = True
+            except Exception:
+                pass
                 
-                coord_text = ""
-                if self.wcs:
-                    sky_coord = self.wcs.pixel_to_world(cx, cy)
-                    j2000 = sky_coord.transform_to(FK5(equinox='J2000'))
-                    ra_str = j2000.ra.to_string(unit="hour", sep="hms", precision=1)
-                    dec_str = j2000.dec.to_string(unit="degree", sep="dms", precision=1)
-                    coord_text = f" (RA:{ra_str} DEC:{dec_str})"
+        # Look up if this star is in the catalog to get its color index automatically
+        matched_star = None
+        if self.wcs:
+            clicked_sky = self.wcs.pixel_to_world(cx, cy)
+            best_dist = 999.0
+            for star in self.catalog_stars:
+                star_coord = SkyCoord(ra=star['ra']*u.deg, dec=star['dec']*u.deg, frame='icrs')
+                dist_arcsec = clicked_sky.separation(star_coord).arcsec
+                if dist_arcsec < 15.0 and dist_arcsec < best_dist:
+                    best_dist = dist_arcsec
+                    matched_star = star
                     
-                self.push_state()
-                self.annotations.append({
-                    'x': cx / w_orig,
-                    'y': cy / h_orig,
-                    'text': f"Target Mag={mag_u:.2f}{coord_text}"
-                })
-                self.render_canvas(is_dragging=False)
+        is_gaia = True
+        if self.catalog_stars and 'Vmag' in self.catalog_stars[0]:
+            is_gaia = False
+            
+        default_color = 0.8 if is_gaia else 0.6
+        color_name = "BP-RP (Gaia)" if is_gaia else "B-V (APASS)"
+        
+        color_source_info = ""
+        target_color = default_color
+        dialog_needed = True
+        
+        # Check if the image is a color FIT to perform color index measurement & interpolation
+        is_color_image = False
+        if len(self.debayered_cache.shape) == 3 and self.debayered_cache.shape[2] == 3:
+            is_color_image = np.max(np.abs(self.debayered_cache[:,:,0] - self.debayered_cache[:,:,2])) > 0.005
+            
+        if is_color_image:
+            calib_with_colors = []
+            for s in self.calib_stars:
+                if s.get('flux_r') is not None and s.get('flux_b') is not None:
+                    fr = s['flux_r']
+                    fb = s['flux_b']
+                    if fr > 1.0 and fb > 1.0:
+                        instr_ci = -2.5 * np.log10(fb / fr)
+                        calib_with_colors.append({
+                            'instr_ci': instr_ci,
+                            'true_ci': s.get('color_index', 0.0)
+                        })
+            if len(calib_with_colors) >= 2:
+                x_pts = np.array([item['instr_ci'] for item in calib_with_colors])
+                y_pts = np.array([item['true_ci'] for item in calib_with_colors])
+                try:
+                    slope_c, intercept_c = np.polyfit(x_pts, y_pts, 1)
+                    flux_r, _, _ = self.measure_aperture_flux(self.debayered_cache[:,:,0], px_x, px_y)
+                    flux_b, _, _ = self.measure_aperture_flux(self.debayered_cache[:,:,2], px_x, px_y)
+                    if flux_r > 1.0 and flux_b > 1.0:
+                        target_instr_ci = -2.5 * np.log10(flux_b / flux_r)
+                        target_color = slope_c * target_instr_ci + intercept_c
+                        target_color = float(np.clip(target_color, -0.5, 3.0))
+                        color_source_info = f"{target_color:.2f} (interpolated from color FIT: B/R flux ratio)"
+                        dialog_needed = False
+                except Exception:
+                    pass
+                    
+        if dialog_needed:
+            # Fallback 1: Silent lookup from catalog if it is a known star
+            if matched_star is not None and matched_star.get('color_index') is not None:
+                try:
+                    target_color = float(matched_star['color_index'])
+                    color_source_info = f"{target_color:.2f} (loaded automatically from catalog)"
+                except ValueError:
+                    dialog = ColorIndexDialog(self.root, is_gaia=is_gaia, default_val=default_color)
+                    target_color = dialog.result
+                    color_source_info = f"{target_color:.2f} (manually selected)"
+            else:
+                # Fallback 2: Unknown target and monochrome FIT. Open dialog!
+                dialog = ColorIndexDialog(self.root, is_gaia=is_gaia, default_val=default_color)
+                target_color = dialog.result
+                color_source_info = f"{target_color:.2f} (manually selected, unknown target)"
                 
-                zp_details = "\n".join([f"Star {i+1}: Mag={s['mag']:.2f}, Flux={s['flux']:.1f} -> ZP={s['mag'] + 2.5 * np.log10(s['flux']):.2f}" for i, s in enumerate(self.calib_stars)])
-                messagebox.showinfo("Photometry Result", 
-                                    f"Photometry Calibration Successful!\n\n"
-                                    f"Calibration Zero-Points:\n{zp_details}\n"
-                                    f"Average Zero-Point (ZP): {zp:.3f}\n\n"
-                                    f"Target Star Measured Flux: {flux:.1f}\n"
-                                    f"Target Star Calibrated Mag: {mag_u:.2f}\n\n"
-                                    f"Annotation added to image.")
+        if has_color_correction:
+            mag_u = -2.5 * np.log10(flux) + zp + c1 * target_color
+        else:
+            mag_u = -2.5 * np.log10(flux) + zp
+            
+        # Estimate likelihood percentages based on the resolved color index
+        c_gaia = target_color if is_gaia else (1.3 * target_color)
+        w_ast = np.exp(-0.5 * ((c_gaia - 0.8) / 0.15)**2)
+        w_sn = np.exp(-0.5 * ((c_gaia - 0.2) / 0.15)**2)
+        w_nova = np.exp(-0.5 * ((c_gaia - 0.6) / 0.25)**2)
+        w_red = np.exp(-0.5 * ((c_gaia - 2.2) / 0.40)**2)
+        w_blue = np.exp(-0.5 * ((c_gaia - (-0.3)) / 0.25)**2)
+        
+        total_w = w_ast + w_sn + w_nova + w_red + w_blue
+        if total_w < 1e-6:
+            total_w = 1e-6
+            
+        p_ast = (w_ast / total_w) * 100.0
+        p_sn = (w_sn / total_w) * 100.0
+        p_nova = (w_nova / total_w) * 100.0
+        p_red = (w_red / total_w) * 100.0
+        p_blue = (w_blue / total_w) * 100.0
+        
+        candidates = [
+            ("Asteroid / Solar-type Yellow Dwarf", p_ast),
+            ("Supernova (Typical Ia near Max)", p_sn),
+            ("Nova (Typical / Early Outburst)", p_nova),
+            ("Red Dwarf / M-Class Star", p_red),
+            ("Hot Blue Giant / O-Class Star", p_blue)
+        ]
+        candidates.sort(key=lambda x: x[1], reverse=True)
+        
+        prob_str = "--- Target Classification Probability Estimate ---\n"
+        prob_str += "\n".join([f"• {name}: {prob:.1f}%" for name, prob in candidates if prob >= 1.0])
+            
+        coord_text = ""
+        if self.wcs:
+            sky_coord = self.wcs.pixel_to_world(cx, cy)
+            j2000 = sky_coord.transform_to(FK5(equinox='J2000'))
+            ra_str = j2000.ra.to_string(unit="hour", sep="hms", precision=1)
+            dec_str = j2000.dec.to_string(unit="degree", sep="dms", precision=1)
+            coord_text = f" (RA:{ra_str} DEC:{dec_str})"
+            
+        self.push_state()
+        self.annotations.append({
+            'x': cx / w_orig,
+            'y': cy / h_orig,
+            'text': f"Target Mag={mag_u:.2f}{coord_text}"
+        })
+        self.render_canvas(is_dragging=False)
+        
+        zp_details = "\n".join([f"Star {i+1}: Mag={s['mag']:.2f}, CI={s.get('color_index',0.0):.2f}, ZP={s['mag'] + 2.5 * np.log10(s['flux']):.2f}" for i, s in enumerate(self.calib_stars)])
+        
+        if has_color_correction:
+            calib_msg = (
+                f"Photometry Measurement Successful with Color Correction!\n\n"
+                f"Fitted Equation: Mag = -2.5*log10(Flux) + {zp:.3f} + ({c1:.3f}) * ColorIndex\n"
+                f"Zero-Point (ZP): {zp:.3f}\n"
+                f"Color Term (C1): {c1:.3f}\n\n"
+                f"Target Star Color Index ({color_name}): {color_source_info}\n"
+                f"Target Star Measured Flux: {flux:.1f}\n"
+                f"Target Star Calibrated Mag: {mag_u:.2f}\n\n"
+                f"{prob_str}\n\n"
+                f"Annotation added to image."
+            )
+        else:
+            calib_msg = (
+                f"Photometry Measurement Successful!\n\n"
+                f"Calibration Zero-Points:\n{zp_details}\n"
+                f"Average Zero-Point (ZP): {zp:.3f}\n\n"
+                f"Target Star Measured Flux: {flux:.1f}\n"
+                f"Target Star Calibrated Mag: {mag_u:.2f}\n\n"
+                f"{prob_str}\n\n"
+                f"Annotation added to image."
+            )
+            
+        messagebox.showinfo("Measurement Result", calib_msg)
         
     def get_cached_tile(self, ra, dec, size):
         import os
@@ -2725,21 +3284,23 @@ class FitsManagerApp:
         progress_bar.pack(pady=5, padx=15, fill="x")
         
         txt_log = tk.Text(log_win, bg="#111827", fg="#38bdf8", insertbackground="white", font=("Consolas", 9), bd=0, padx=10, pady=10)
-        txt_log.pack(fill="both", expand=True, padx=15, pady=(0, 10))
         
         self.dss_download_cancelled = False
-        def cancel_download():
-            self.dss_download_cancelled = True
-            log_msg("[INFO] Cancellation requested by user...")
-            
-        btn_cancel = tk.Button(log_win, text="Cancel Download", command=cancel_download, bg="#ef4444", fg="white", font=("Segoe UI", 9, "bold"), bd=0, padx=15, pady=6)
-        btn_cancel.pack(pady=(0, 15))
         
         def log_msg(msg):
             def _log():
                 txt_log.insert(tk.END, msg + "\n")
                 txt_log.see(tk.END)
             log_win.after(0, _log)
+            
+        def cancel_download():
+            self.dss_download_cancelled = True
+            log_msg("[INFO] Cancellation requested by user...")
+            
+        btn_cancel = tk.Button(log_win, text="Cancel Download", command=cancel_download, bg="#ef4444", fg="white", font=("Segoe UI", 9, "bold"), bd=0, padx=15, pady=6)
+        btn_cancel.pack(side="bottom", pady=15)
+        
+        txt_log.pack(side="top", fill="both", expand=True, padx=15, pady=(0, 10))
             
         def set_progress(value, max_val):
             def _prog():
@@ -3005,6 +3566,1255 @@ class FitsManagerApp:
         download_thread.daemon = True
         download_thread.start()
 
+    def platesolve_vizier_astroalign(self):
+        if self.fits_data is None:
+            messagebox.showerror("Error", "Load a FITS file first.")
+            return
+
+        init_ra = ""
+        init_dec = ""
+        
+        # Prefill RA/Dec from header
+        ra_val = self.fits_header.get('RA', self.fits_header.get('OBJCTRA', ''))
+        dec_val = self.fits_header.get('DEC', self.fits_header.get('OBJCTDEC', ''))
+        if ra_val != "":
+            init_ra = str(ra_val)
+        if dec_val != "":
+            init_dec = str(dec_val)
+            
+        init_focal = str(self.fits_header.get('FOCALLEN', ''))
+        init_pixel = str(self.fits_header.get('XPIXSZ', self.fits_header.get('PIXSIZE', '')))
+        init_radius = "50" # Default 50 arcminutes
+
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Plate Solve (Vizier/Astroalign)")
+        dialog.geometry("450x380")
+        dialog.configure(bg=self.panel_color)
+        dialog.transient(self.root)
+        dialog.grab_set()
+        
+        lbl_title = tk.Label(dialog, text="Plate Solve Parameters", bg=self.panel_color, fg=self.text_color, font=("Segoe UI", 12, "bold"))
+        lbl_title.pack(pady=15)
+        
+        grid_frame = tk.Frame(dialog, bg=self.panel_color)
+        grid_frame.pack(padx=20, pady=10, fill="both", expand=True)
+        
+        lbl_ra = tk.Label(grid_frame, text="Target RA (deg or hms):", bg=self.panel_color, fg=self.text_color, font=("Segoe UI", 9, "bold"), anchor="w")
+        lbl_ra.grid(row=0, column=0, sticky="ew", pady=5)
+        ent_ra = tk.Entry(grid_frame, bg=self.bg_color, fg=self.text_color, insertbackground="white", bd=0, highlightthickness=1, highlightbackground=self.control_bg)
+        ent_ra.insert(0, init_ra)
+        ent_ra.grid(row=0, column=1, sticky="ew", pady=5, padx=10)
+        
+        lbl_dec = tk.Label(grid_frame, text="Target DEC (deg or dms):", bg=self.panel_color, fg=self.text_color, font=("Segoe UI", 9, "bold"), anchor="w")
+        lbl_dec.grid(row=1, column=0, sticky="ew", pady=5)
+        ent_dec = tk.Entry(grid_frame, bg=self.bg_color, fg=self.text_color, insertbackground="white", bd=0, highlightthickness=1, highlightbackground=self.control_bg)
+        ent_dec.insert(0, init_dec)
+        ent_dec.grid(row=1, column=1, sticky="ew", pady=5, padx=10)
+        
+        lbl_focal = tk.Label(grid_frame, text="Focal Length (mm):", bg=self.panel_color, fg=self.text_color, font=("Segoe UI", 9, "bold"), anchor="w")
+        lbl_focal.grid(row=2, column=0, sticky="ew", pady=5)
+        ent_focal = tk.Entry(grid_frame, bg=self.bg_color, fg=self.text_color, insertbackground="white", bd=0, highlightthickness=1, highlightbackground=self.control_bg)
+        ent_focal.insert(0, init_focal)
+        ent_focal.grid(row=2, column=1, sticky="ew", pady=5, padx=10)
+        
+        lbl_pixel = tk.Label(grid_frame, text="Pixel Size (μm):", bg=self.panel_color, fg=self.text_color, font=("Segoe UI", 9, "bold"), anchor="w")
+        lbl_pixel.grid(row=3, column=0, sticky="ew", pady=5)
+        ent_pixel = tk.Entry(grid_frame, bg=self.bg_color, fg=self.text_color, insertbackground="white", bd=0, highlightthickness=1, highlightbackground=self.control_bg)
+        ent_pixel.insert(0, init_pixel)
+        ent_pixel.grid(row=3, column=1, sticky="ew", pady=5, padx=10)
+
+        lbl_radius = tk.Label(grid_frame, text="Search Radius (arcmin):", bg=self.panel_color, fg=self.text_color, font=("Segoe UI", 9, "bold"), anchor="w")
+        lbl_radius.grid(row=4, column=0, sticky="ew", pady=5)
+        ent_radius = tk.Entry(grid_frame, bg=self.bg_color, fg=self.text_color, insertbackground="white", bd=0, highlightthickness=1, highlightbackground=self.control_bg)
+        ent_radius.insert(0, init_radius)
+        ent_radius.grid(row=4, column=1, sticky="ew", pady=5, padx=10)
+        
+        grid_frame.columnconfigure(1, weight=1)
+        
+        btn_frame = tk.Frame(dialog, bg=self.panel_color)
+        btn_frame.pack(pady=15, fill="x")
+        
+        def parse_coordinate(ra_str, dec_str):
+            from astropy.coordinates import SkyCoord
+            import astropy.units as u
+            ra_str = ra_str.strip()
+            dec_str = dec_str.strip()
+            try:
+                return SkyCoord(ra=float(ra_str), dec=float(dec_str), unit=(u.deg, u.deg), frame='icrs')
+            except ValueError:
+                pass
+            try:
+                if 'h' in ra_str or ' ' in ra_str:
+                    return SkyCoord(ra=ra_str, dec=dec_str, unit=(u.hourangle, u.deg), frame='icrs')
+                else:
+                    return SkyCoord(ra=ra_str, dec=dec_str, unit=(u.deg, u.deg), frame='icrs')
+            except Exception as e:
+                raise ValueError(f"RA={ra_str}, DEC={dec_str}: {e}")
+
+        def on_solve():
+            ra_s = ent_ra.get().strip()
+            dec_s = ent_dec.get().strip()
+            focal_s = ent_focal.get().strip()
+            pixel_s = ent_pixel.get().strip()
+            radius_s = ent_radius.get().strip()
+            
+            if not ra_s or not dec_s:
+                messagebox.showerror("Error", "Please provide target RA and DEC coordinates.")
+                return
+            try:
+                parse_coordinate(ra_s, dec_s)
+            except Exception as ex:
+                messagebox.showerror("Error", f"Failed to parse coordinates: {ex}")
+                return
+                
+            try:
+                f_val = float(focal_s)
+                p_val = float(pixel_s)
+                r_val = float(radius_s)
+                if f_val <= 0 or p_val <= 0 or r_val <= 0:
+                    raise ValueError()
+            except ValueError:
+                messagebox.showerror("Error", "Focal Length, Pixel Size and Radius must be valid positive numbers.")
+                return
+                
+            dialog.destroy()
+            self.run_platesolve_vizier_astroalign(ra_s, dec_s, f_val, p_val, r_val)
+            
+        btn_solve = tk.Button(btn_frame, text="Solve Image", command=on_solve, bg="#10b981", fg="white", font=("Segoe UI", 10, "bold"), bd=0, padx=20, pady=6)
+        btn_solve.pack(side="right", padx=20)
+        
+        btn_cancel = tk.Button(btn_frame, text="Cancel", command=dialog.destroy, bg="#374151", fg="white", font=("Segoe UI", 10, "bold"), bd=0, padx=20, pady=6)
+        btn_cancel.pack(side="right", padx=10)
+
+    def run_platesolve_vizier_astroalign(self, ra_str, dec_str, focal_length, pixel_size, radius_arcmin):
+        self.root.config(cursor="watch")
+        self.root.update()
+        
+        log_win = tk.Toplevel(self.root)
+        log_win.title("Vizier/Astroalign Plate Solver")
+        log_win.geometry("600x450")
+        log_win.configure(bg="#1f2937")
+        log_win.transient(self.root)
+        
+        lbl = tk.Label(log_win, text="Resolving Astrometric Solution...", bg="#1f2937", fg="white", font=("Segoe UI", 10, "bold"))
+        lbl.pack(pady=(10, 5))
+        
+        txt_log = tk.Text(log_win, bg="#111827", fg="#10b981", insertbackground="white", font=("Consolas", 9), bd=0, padx=10, pady=10)
+        txt_log.pack(fill="both", expand=True, padx=15, pady=(0, 15))
+        
+        def log_msg(msg):
+            def _log():
+                txt_log.insert(tk.END, msg + "\n")
+                txt_log.see(tk.END)
+            log_win.after(0, _log)
+            
+        def finish_done(solved_wcs):
+            try:
+                self.root.config(cursor="")
+                log_msg("\n[SUCCESS] Image plate-solved successfully!")
+                
+                # Cache WCS in jobs database
+                wcs_cards = dict(solved_wcs.to_header())
+                wcs_cache = {k: v for k, v in wcs_cards.items() if any(x in k for x in ['CRPIX', 'CRVAL', 'CD', 'CTYPE', 'CUNIT', 'PC'])}
+                self.jobs[self.fits_path] = {
+                    "status": "success",
+                    "timestamp": time.time(),
+                    "wcs": wcs_cache
+                }
+                self.save_jobs()
+                
+                # Merge WCS header cards into in-memory fits_header
+                for key, val in wcs_cache.items():
+                    self.fits_header[key] = val
+                self.fits_header['RADECSYS'] = 'ICRS'
+                self.fits_header['EQUINOX'] = 2000.0
+                self.wcs_saved_to_disk = False
+                
+                self.wcs = solved_wcs
+                self.meta_tree.delete(*self.meta_tree.get_children())
+                important_keys = ["OBJECT", "EXPTIME", "TELESCOP", "INSTRUME", "FILTER", "DATE-OBS", "BAYERPAT", "EQUINOX"]
+                for key in important_keys:
+                    if key in self.fits_header:
+                        self.meta_tree.insert("", "end", text=key, values=(str(self.fits_header[key]),))
+                for key, val in self.fits_header.items():
+                    if key not in important_keys and key.strip() != "":
+                        self.meta_tree.insert("", "end", text=key, values=(str(val),))
+                        
+                self.render_canvas(is_dragging=False)
+                self.update_wcs_hint_visibility()
+                log_win.destroy()
+                messagebox.showinfo("Plate Solve", "Plate solve successful! WCS coordinates loaded in memory.", parent=self.root)
+            except Exception as e:
+                log_msg(f"\n[FATAL ERROR] finish_done failed: {e}")
+                import traceback
+                log_msg(traceback.format_exc())
+            
+        def finish_error(err):
+            self.root.config(cursor="")
+            log_msg(f"\n[ERROR] Plate solve failed: {err}")
+            messagebox.showerror("Error", f"Plate solve failed: {err}", parent=self.root)
+
+        def parse_coordinate(ra_str, dec_str):
+            from astropy.coordinates import SkyCoord
+            import astropy.units as u
+            ra_str = ra_str.strip()
+            dec_str = dec_str.strip()
+            try:
+                return SkyCoord(ra=float(ra_str), dec=float(dec_str), unit=(u.deg, u.deg), frame='icrs')
+            except ValueError:
+                pass
+            try:
+                if 'h' in ra_str or ' ' in ra_str:
+                    return SkyCoord(ra=ra_str, dec=dec_str, unit=(u.hourangle, u.deg), frame='icrs')
+                else:
+                    return SkyCoord(ra=ra_str, dec=dec_str, unit=(u.deg, u.deg), frame='icrs')
+            except Exception as e:
+                raise ValueError(f"RA={ra_str}, DEC={dec_str}: {e}")
+
+        def worker():
+            try:
+                import numpy as np
+                import cv2
+                import urllib.request
+                import urllib.parse
+                import ssl
+                import astroalign as aa
+                from astropy.wcs import WCS
+                from astropy.coordinates import SkyCoord
+                import astropy.units as u
+                
+                log_msg("[INFO] Extracting stars from FITS image...")
+                h_orig, w_orig = self.fits_data.shape[-2:]
+                
+                if len(self.fits_data.shape) == 3:
+                    gray = np.mean(self.fits_data, axis=0).astype(np.float32)
+                else:
+                    gray = self.fits_data.astype(np.float32)
+                    
+                percentiles_to_try = [99.2, 99.8, 99.9, 99.95, 99.98]
+                thresh_val = None
+                contours = []
+                
+                for pct in percentiles_to_try:
+                    thresh_val = np.percentile(gray, pct)
+                    _, thresh = cv2.threshold(gray, thresh_val, 255, cv2.THRESH_BINARY)
+                    thresh = thresh.astype(np.uint8)
+                    contours_candidate, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                    
+                    valid_candidates = 0
+                    for cnt in contours_candidate:
+                        if cv2.contourArea(cnt) > 1.0:
+                            valid_candidates += 1
+                            
+                    if 80 <= valid_candidates <= 900:
+                        contours = contours_candidate
+                        log_msg(f"[INFO] Selected adaptive threshold at {pct}% (Thresh={thresh_val:.1f}, {valid_candidates} candidates)")
+                        break
+                
+                if len(contours) == 0:
+                    pct = 99.95 if np.max(gray) > 5000 else 99.2
+                    thresh_val = np.percentile(gray, pct)
+                    _, thresh = cv2.threshold(gray, thresh_val, 255, cv2.THRESH_BINARY)
+                    thresh = thresh.astype(np.uint8)
+                    contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                    log_msg(f"[INFO] Using fallback threshold at {pct}% (Thresh={thresh_val:.1f})")
+                    
+                img_stars = []
+                for cnt in contours:
+                    area = cv2.contourArea(cnt)
+                    if area <= 1.0:
+                        continue
+                    M = cv2.moments(cnt)
+                    if M["m00"] > 0:
+                        cX = M["m10"] / M["m00"]
+                        cY = M["m01"] / M["m00"]
+                        img_stars.append((cX, cY, M["m00"]))
+                        
+                img_stars = sorted(img_stars, key=lambda s: s[2], reverse=True)[:150]
+                img_pts = np.array([[s[0], s[1]] for s in img_stars], dtype=np.float32)
+                log_msg(f"[INFO] Extracted {len(img_pts)} star candidates from FITS (hot-pixel filter applied).")
+                
+                if len(img_pts) < 10:
+                    raise Exception("Too few stars detected in FITS image.")
+                    
+                target_coord = parse_coordinate(ra_str, dec_str)
+                ra_deg = target_coord.ra.deg
+                dec_deg = target_coord.dec.deg
+                
+                log_msg(f"[INFO] Coordinates: RA={ra_deg:.6f} deg, DEC={dec_deg:.6f} deg")
+                pixel_scale_deg = (pixel_size / focal_length) * (206.265 / 3600.0)
+                log_msg(f"[INFO] Calculated scale: {pixel_scale_deg*3600.0:.3f} arcsec/pixel")
+                
+                log_msg(f"[QUERY] Querying Vizier Gaia DR3 (Radius: {radius_arcmin} arcmin)...")
+                c_val = f"{ra_deg:.6f} {dec_deg:.6f}".replace(',', '.')
+                c_str = urllib.parse.quote(c_val)
+                
+                url = f"https://vizier.cds.unistra.fr/viz-bin/asu-tsv?-source=I/355/gaiadr3&-c={c_str}&-c.r={radius_arcmin:f}&-c.u=arcmin&-out.form=|&-out.add=RA_ICRS,DE_ICRS&-out=Gmag&-sort=Gmag&-out.max=500"
+                
+                req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+                ssl_context = ssl._create_unverified_context()
+                
+                lines = []
+                try:
+                    with urllib.request.urlopen(req, timeout=20, context=ssl_context) as response:
+                        lines = response.read().decode('utf-8').split('\n')
+                except Exception as ex:
+                    log_msg(f"[WARN] Primary mirror failed: {ex}. Trying Harvard...")
+                    url_harv = url.replace("vizier.cds.unistra.fr", "vizier.cfa.harvard.edu")
+                    req = urllib.request.Request(url_harv, headers={'User-Agent': 'Mozilla/5.0'})
+                    try:
+                        with urllib.request.urlopen(req, timeout=20, context=ssl_context) as response:
+                            lines = response.read().decode('utf-8').split('\n')
+                    except Exception as harv_ex:
+                        log_msg(f"[ERROR] Harvard mirror also failed: {harv_ex}")
+                        raise Exception(f"All Vizier mirrors failed (Primary: {ex}, Secondary: {harv_ex}). Check your connection.")
+                
+                header_found = False
+                cols = {}
+                catalog_stars = []
+                for line in lines:
+                    line = line.strip()
+                    if not line or line.startswith("#"):
+                        continue
+                    parts = line.split('|')
+                    if not header_found:
+                        if any("RA" in p or "coord" in p or "_RAJ" in p for p in parts):
+                            header_found = True
+                            cols = {p.strip(): i for i, p in enumerate(parts)}
+                        continue
+                    if line.startswith("-"):
+                        continue
+                    if len(parts) >= 3:
+                        try:
+                            ra_idx = cols.get("RA_ICRS", cols.get("_RA_ICRS", 0))
+                            dec_idx = cols.get("DE_ICRS", cols.get("_DE_ICRS", 1))
+                            mag_idx = cols.get("Gmag", 2)
+                            
+                            ra_s = float(parts[ra_idx])
+                            dec_s = float(parts[dec_idx])
+                            mag_s = float(parts[mag_idx])
+                            catalog_stars.append({'ra': ra_s, 'dec': dec_s, 'mag': mag_s})
+                        except Exception:
+                            continue
+                            
+                catalog_stars = sorted(catalog_stars, key=lambda s: s['mag'])[:150]
+                log_msg(f"[INFO] Fetched {len(catalog_stars)} Gaia catalog stars.")
+                
+                if len(catalog_stars) < 10:
+                    raise Exception("Too few stars in Gaia catalog search region.")
+                    
+                guess_wcs = WCS(naxis=2)
+                guess_wcs.wcs.crpix = [w_orig / 2.0, h_orig / 2.0]
+                guess_wcs.wcs.crval = [ra_deg, dec_deg]
+                guess_wcs.wcs.cdelt = [-pixel_scale_deg, pixel_scale_deg]
+                guess_wcs.wcs.ctype = ["RA---TAN", "DEC--TAN"]
+                
+                solved = False
+                solved_wcs = None
+                for parity in ["normal", "mirrored"]:
+                    log_msg(f"[ALIGN] Running astroalign ({parity} parity)...")
+                    cat_pts = []
+                    for star in catalog_stars:
+                        px, py = guess_wcs.world_to_pixel(SkyCoord(star['ra'], star['dec'], unit='deg', frame='icrs'))
+                        if parity == "mirrored":
+                            px = w_orig - px
+                        if -100 <= px < w_orig + 100 and -100 <= py < h_orig + 100:
+                            cat_pts.append((px, py))
+                            
+                    cat_pts = np.array(cat_pts, dtype=np.float32)
+                    if len(cat_pts) < 10:
+                        continue
+                        
+                    try:
+                        transf, (s_list, t_list) = aa.find_transform(img_pts, cat_pts)
+                        log_msg(f"[ALIGN] Solved! Scale: {transf.scale:.4f}, Rotation: {np.degrees(transf.rotation):.2f}°")
+                        
+                        S = transf.scale
+                        theta = transf.rotation
+                        cos_t = np.cos(theta)
+                        sin_t = np.sin(theta)
+                        R = np.array([[cos_t, -sin_t], [sin_t, cos_t]])
+                        T = transf.translation
+                        
+                        CD_guess = np.diag(guess_wcs.wcs.cdelt)
+                        crpix_guess = np.array(guess_wcs.wcs.crpix)
+                        
+                        if parity == "mirrored":
+                            M = np.array([[-S * R[0,0], -S * R[0,1]],
+                                          [ S * R[1,0],  S * R[1,1]]])
+                            K = np.array([w_orig - T[0], T[1]])
+                        else:
+                            M = S * R
+                            K = T
+                            
+                        M_inv = np.linalg.inv(M)
+                        crpix_new = M_inv @ (crpix_guess - K)
+                        CD_new = CD_guess @ M
+                            
+                        solved_wcs = WCS(naxis=2)
+                        solved_wcs.wcs.crval = guess_wcs.wcs.crval
+                        solved_wcs.wcs.crpix = crpix_new
+                        solved_wcs.wcs.cd = CD_new
+                        solved_wcs.wcs.ctype = ["RA---TAN", "DEC--TAN"]
+                        solved = True
+                        break
+                    except Exception as match_ex:
+                        log_msg(f"[ALIGN] Failed for {parity} parity: {match_ex}")
+                        
+                if not solved:
+                    raise Exception("Astroalign could not match the patterns. Verify focal length, pixel size, or RA/Dec coordinates.")
+                    
+                log_win.after(0, lambda: finish_done(solved_wcs))
+            except Exception as e:
+                log_win.after(0, lambda: finish_error(e))
+                
+        import threading
+        t = threading.Thread(target=worker)
+        t.daemon = True
+        t.start()
+
+    def update_wcs_hint_visibility(self):
+        if self.fits_data is not None:
+            job_info = self.jobs.get(self.fits_path, {})
+            status = job_info.get("status", "")
+            
+            if self.wcs is None or not getattr(self.wcs, 'has_celestial', False):
+                if status == "pending":
+                    self.lbl_wcs_hint.config(
+                        text=f"⏳ Online job pending (Job ID: {job_info.get('job_id')})\nUse Astrometry -> Check Status...",
+                        bg="black", fg="#38bdf8"
+                    )
+                    self.lbl_wcs_hint.pack(fill="x", padx=5, pady=5)
+                else:
+                    self.lbl_wcs_hint.config(
+                        text="⚠️ No WCS projection found\nTry: Astrometry -> Plate Solve",
+                        bg="black", fg="#facc15"
+                    )
+                    self.lbl_wcs_hint.pack(fill="x", padx=5, pady=5)
+                self.btn_save_wcs_header.pack_forget()
+            else:
+                self.lbl_wcs_hint.pack_forget()
+                if not self.wcs_saved_to_disk:
+                    self.btn_save_wcs_header.pack(fill="x", padx=5, pady=5)
+                else:
+                    self.btn_save_wcs_header.pack_forget()
+
+    def load_settings(self):
+        import json
+        import os
+        if os.path.exists(self.settings_path):
+            try:
+                with open(self.settings_path, "r", encoding="utf-8") as f:
+                    self.settings = json.load(f)
+            except Exception:
+                self.settings = {}
+        else:
+            self.settings = {}
+
+    def save_settings(self):
+        import json
+        try:
+            with open(self.settings_path, "w", encoding="utf-8") as f:
+                json.dump(self.settings, f, indent=4)
+        except Exception:
+            pass
+
+    def load_jobs(self):
+        import json
+        import os
+        if os.path.exists(self.jobs_path):
+            try:
+                with open(self.jobs_path, "r", encoding="utf-8") as f:
+                    self.jobs = json.load(f)
+            except Exception:
+                self.jobs = {}
+        else:
+            self.jobs = {}
+
+    def save_jobs(self):
+        import json
+        try:
+            with open(self.jobs_path, "w", encoding="utf-8") as f:
+                json.dump(self.jobs, f, indent=4)
+        except Exception:
+            pass
+
+    def configure_astrometry_api_key(self):
+        import tkinter.simpledialog as sd
+        current_key = self.settings.get("astrometry_net_api_key", "")
+        
+        msg = (
+            "Inserisci la tua API Key di Nova.astrometry.net:\n\n"
+            "Come ottenerla:\n"
+            "1. Accedi o registrati su: https://nova.astrometry.net/\n"
+            "2. Vai nel tuo 'Profile' (in alto a destra)\n"
+            "3. Troverai la tua API Key nella sezione 'My API Key'\n\n"
+            "La chiave verrà salvata localmente nel file 'settings.json'."
+        )
+        
+        new_key = sd.askstring("Configura API Key Astrometry.net", msg, initialvalue=current_key, parent=self.root)
+        if new_key is not None:
+            self.settings["astrometry_net_api_key"] = new_key.strip()
+            self.save_settings()
+            messagebox.showinfo("Configurazione", "API Key salvata con successo in settings.json!", parent=self.root)
+
+    def platesolve_nova_astrometry(self):
+        if self.fits_data is None:
+            messagebox.showerror("Error", "Load a FITS file first.")
+            return
+
+        api_key = self.settings.get("astrometry_net_api_key", "").strip()
+        if not api_key:
+            messagebox.showerror("API Key mancante", 
+                                 "Configura prima la tua API Key di Astrometry.net dal menu:\n"
+                                 "Astrometria -> Configura Chiave API Astrometry.net...", 
+                                 parent=self.root)
+            return
+
+        self.run_platesolve_nova_astrometry(api_key)
+
+    def run_platesolve_nova_astrometry(self, api_key):
+        self.root.update()
+        
+        log_win = tk.Toplevel(self.root)
+        log_win.title("Nova.astrometry.net Online Solver")
+        log_win.geometry("600x450")
+        log_win.configure(bg="#1f2937")
+        log_win.transient(self.root)
+        
+        lbl = tk.Label(log_win, text="Uploading and Solving via Astrometry.net...", bg="#1f2937", fg="white", font=("Segoe UI", 10, "bold"))
+        lbl.pack(pady=(10, 5))
+        
+        txt_log = tk.Text(log_win, bg="#111827", fg="#38bdf8", insertbackground="white", font=("Consolas", 9), bd=0, padx=10, pady=10)
+        txt_log.pack(fill="both", expand=True, padx=15, pady=(0, 5))
+        
+        btn_bg = tk.Button(log_win, text="Esegui in Background (Chiudi)", command=log_win.destroy, bg="#374151", fg="white", font=("Segoe UI", 9, "bold"), bd=0, padx=10, pady=5)
+        btn_bg.pack(pady=(5, 10))
+        
+        def log_msg(msg):
+            def _log():
+                if log_win.winfo_exists():
+                    txt_log.insert(tk.END, msg + "\n")
+                    txt_log.see(tk.END)
+            if log_win.winfo_exists():
+                log_win.after(0, _log)
+            
+        def finish_done(solved_wcs, resolved_job_id):
+            try:
+                log_msg("\n[SUCCESS] Image plate-solved successfully!")
+                
+                wcs_cards = dict(solved_wcs.to_header())
+                wcs_cache = {k: v for k, v in wcs_cards.items() if any(x in k for x in ['CRPIX', 'CRVAL', 'CD', 'CTYPE', 'CUNIT', 'PC'])}
+                self.jobs[self.fits_path] = {
+                    "status": "success",
+                    "timestamp": time.time(),
+                    "wcs": wcs_cache,
+                    "job_id": resolved_job_id
+                }
+                self.save_jobs()
+                
+                # Merge WCS header cards into in-memory fits_header
+                for key, val in wcs_cache.items():
+                    self.fits_header[key] = val
+                self.fits_header['RADECSYS'] = 'ICRS'
+                self.fits_header['EQUINOX'] = 2000.0
+                self.wcs_saved_to_disk = False
+                
+                self.wcs = solved_wcs
+                self.meta_tree.delete(*self.meta_tree.get_children())
+                important_keys = ["OBJECT", "EXPTIME", "TELESCOP", "INSTRUME", "FILTER", "DATE-OBS", "BAYERPAT", "EQUINOX"]
+                for key in important_keys:
+                    if key in self.fits_header:
+                        self.meta_tree.insert("", "end", text=key, values=(str(self.fits_header[key]),))
+                for key, val in self.fits_header.items():
+                    if key not in important_keys and key.strip() != "":
+                        self.meta_tree.insert("", "end", text=key, values=(str(val),))
+                        
+                self.render_canvas(is_dragging=False)
+                self.update_wcs_hint_visibility()
+                if log_win.winfo_exists():
+                    log_win.destroy()
+                messagebox.showinfo("Plate Solve", "Plate solve successful! WCS coordinates loaded in memory.", parent=self.root)
+            except Exception as e:
+                log_msg(f"\n[FATAL ERROR] finish_done failed: {e}")
+                import traceback
+                log_msg(traceback.format_exc())
+            
+        def finish_error(err):
+            log_msg(f"\n[ERROR] Plate solve failed: {err}")
+            if log_win.winfo_exists():
+                messagebox.showerror("Error", f"Plate solve failed: {err}", parent=log_win)
+
+        def worker():
+            try:
+                import numpy as np
+                import cv2
+                import urllib.request
+                import urllib.parse
+                import ssl
+                import json
+                import time
+                from astropy.wcs import WCS
+                
+                log_msg("[INFO] Compressing FITS to PNG for upload...")
+                h_orig, w_orig = self.fits_data.shape[-2:]
+                
+                if len(self.fits_data.shape) == 3:
+                    gray = np.mean(self.fits_data, axis=0).astype(np.float32)
+                else:
+                    gray = self.fits_data.astype(np.float32)
+                    
+                vmin, vmax = np.percentile(gray, [1.0, 99.5])
+                stretched = np.clip((gray - vmin) / (vmax - vmin) * 255.0, 0, 255).astype(np.uint8)
+                
+                scale_factor = 4
+                new_w = w_orig // scale_factor
+                new_h = h_orig // scale_factor
+                downsampled = cv2.resize(stretched, (new_w, new_h), interpolation=cv2.INTER_AREA)
+                
+                _, png_bytes = cv2.imencode(".png", downsampled)
+                png_data = png_bytes.tobytes()
+                log_msg(f"[INFO] Image compressed to {len(png_data)/1024:.1f} KB.")
+                
+                ssl_context = ssl._create_unverified_context()
+                
+                # Step 1: Login
+                log_msg("[INFO] Logging in to Astrometry.net API...")
+                login_url = "https://nova.astrometry.net/api/login"
+                payload = {"request-json": json.dumps({"apikey": api_key})}
+                data_encoded = urllib.parse.urlencode(payload).encode('utf-8')
+                
+                req = urllib.request.Request(login_url, data=data_encoded, headers={'User-Agent': 'Mozilla/5.0'})
+                with urllib.request.urlopen(req, context=ssl_context) as response:
+                    resp = json.loads(response.read().decode('utf-8'))
+                    session = resp.get("session")
+                    
+                if not session:
+                    raise Exception(f"Login failed: {resp}")
+                    
+                log_msg("[INFO] Login successful. Session created.")
+                
+                # Step 2: Upload
+                log_msg("[INFO] Uploading image to Astrometry.net queue...")
+                upload_url = "https://nova.astrometry.net/api/upload"
+                req_json = {
+                    "session": session,
+                    "allow_commercial_use": "d",
+                    "allow_modifications": "d",
+                    "publicly_visible": "n"
+                }
+                
+                boundary = b'----Boundary' + bytes(str(time.time()), 'utf-8')
+                body = bytearray()
+                body.extend(b'--' + boundary + b'\r\n')
+                body.extend(b'Content-Disposition: form-data; name="request-json"\r\n\r\n')
+                body.extend(json.dumps(req_json).encode('utf-8') + b'\r\n')
+                body.extend(b'--' + boundary + b'\r\n')
+                body.extend(b'Content-Disposition: form-data; name="file"; filename="image.png"\r\n')
+                body.extend(b'Content-Type: image/png\r\n\r\n')
+                body.extend(png_data + b'\r\n')
+                body.extend(b'--' + boundary + b'--\r\n')
+                
+                content_type = f'multipart/form-data; boundary={boundary.decode("utf-8")}'
+                
+                req = urllib.request.Request(upload_url, data=body, headers={'Content-Type': content_type, 'User-Agent': 'Mozilla/5.0'})
+                with urllib.request.urlopen(req, context=ssl_context) as response:
+                    resp = json.loads(response.read().decode('utf-8'))
+                    
+                subid = resp.get("subid")
+                if not subid:
+                    raise Exception(f"Upload failed: {resp}")
+                
+                self.jobs[self.fits_path] = {
+                    "subid": subid,
+                    "status": "pending",
+                    "timestamp": time.time()
+                }
+                self.save_jobs()
+                self.root.after(0, self.update_wcs_hint_visibility)
+                
+                log_msg(f"[INFO] Upload success! Submission ID: {subid}. Waiting for job creation...")
+                
+                # Step 3: Poll Submission for Job ID
+                job_id = None
+                for _ in range(40):
+                    time.sleep(3)
+                    status_url = f"https://nova.astrometry.net/api/submissions/{subid}"
+                    req = urllib.request.Request(status_url, headers={'User-Agent': 'Mozilla/5.0'})
+                    with urllib.request.urlopen(req, context=ssl_context) as response:
+                        resp = json.loads(response.read().decode('utf-8'))
+                    jobs = resp.get("jobs", [])
+                    if jobs and jobs[0] is not None:
+                        job_id = jobs[0]
+                        break
+                        
+                if not job_id:
+                    raise Exception("Astrometry.net took too long to create a solving job.")
+                
+                self.jobs[self.fits_path]["job_id"] = job_id
+                self.save_jobs()
+                self.root.after(0, self.update_wcs_hint_visibility)
+                log_msg(f"[INFO] Job created! Job ID: {job_id}. Running online plate-solve...")
+                log_msg("[INFO] Puoi chiudere questa finestra se desideri; l'elaborazione continuerà sul server.")
+                
+                # Step 4: Poll Job for Success
+                solved = False
+                for _ in range(90):
+                    time.sleep(4)
+                    job_url = f"https://nova.astrometry.net/api/jobs/{job_id}"
+                    req = urllib.request.Request(job_url, headers={'User-Agent': 'Mozilla/5.0'})
+                    with urllib.request.urlopen(req, context=ssl_context) as response:
+                        resp = json.loads(response.read().decode('utf-8'))
+                    status = resp.get("status")
+                    log_msg(f"[STATUS] Job status: {status}")
+                    if status == "success":
+                        solved = True
+                        break
+                    elif status == "failure":
+                        self.jobs[self.fits_path]["status"] = "failed"
+                        self.save_jobs()
+                        self.root.after(0, self.update_wcs_hint_visibility)
+                        raise Exception("Astrometry.net failed to solve this image.")
+                        
+                if not solved:
+                    raise Exception("Plate-solving is taking a long time. You can check status later via Astrometria -> Verifica stato.")
+                    
+                # Step 5: Download and Scale WCS
+                log_msg("[INFO] Job succeeded! Downloading solved WCS headers...")
+                wcs_url = f"https://nova.astrometry.net/wcs_file/{job_id}"
+                req = urllib.request.Request(wcs_url, headers={'User-Agent': 'Mozilla/5.0'})
+                
+                import tempfile
+                with tempfile.NamedTemporaryFile(suffix=".fits", delete=False) as tmp_f:
+                    tmp_path = tmp_f.name
+                    
+                try:
+                    with urllib.request.urlopen(req, context=ssl_context) as response:
+                        with open(tmp_path, "wb") as f:
+                            f.write(response.read())
+                            
+                    solved_wcs = WCS(tmp_path)
+                    
+                    solved_wcs.wcs.crpix = [pix * scale_factor for pix in solved_wcs.wcs.crpix]
+                    if solved_wcs.wcs.has_cd():
+                        solved_wcs.wcs.cd = solved_wcs.wcs.cd / scale_factor
+                    elif solved_wcs.wcs.cdelt is not None:
+                        solved_wcs.wcs.cdelt = [delt / scale_factor for delt in solved_wcs.wcs.cdelt]
+                        
+                finally:
+                    if os.path.exists(tmp_path):
+                        os.remove(tmp_path)
+                        
+                log_win.after(0, lambda: finish_done(solved_wcs, job_id))
+            except Exception as e:
+                log_win.after(0, lambda: finish_error(e))
+                
+        import threading
+        t = threading.Thread(target=worker)
+        t.daemon = True
+        t.start()
+
+    def check_astrometry_job_status(self):
+        if self.fits_data is None:
+            messagebox.showerror("Error", "Load a FITS file first.")
+            return
+            
+        job_info = self.jobs.get(self.fits_path, {})
+        status = job_info.get("status")
+        if not status:
+            messagebox.showinfo("Nessun Job", "Nessun lavoro pendente o salvato per questo file FITS.", parent=self.root)
+            return
+            
+        if status == "success":
+            messagebox.showinfo("Risolto", "Questo file è già stato risolto con successo. Il WCS è caricato in memoria.", parent=self.root)
+            return
+            
+        if status == "failed":
+            retry = messagebox.askyesno("Job Fallito", "Il lavoro precedente per questo file è fallito. Vuoi riprovare a risolverlo?", parent=self.root)
+            if retry:
+                self.platesolve_nova_astrometry()
+            return
+            
+        subid = job_info.get("subid")
+        job_id = job_info.get("job_id")
+        
+        self.root.update()
+        
+        def checker_worker():
+            try:
+                import urllib.request
+                import urllib.parse
+                import ssl
+                import json
+                import os
+                import tempfile
+                import time
+                from astropy.wcs import WCS
+                
+                ssl_context = ssl._create_unverified_context()
+                resolved_job_id = job_id
+                
+                if not resolved_job_id and subid:
+                    status_url = f"https://nova.astrometry.net/api/submissions/{subid}"
+                    req = urllib.request.Request(status_url, headers={'User-Agent': 'Mozilla/5.0'})
+                    with urllib.request.urlopen(req, context=ssl_context) as response:
+                        resp = json.loads(response.read().decode('utf-8'))
+                    jobs = resp.get("jobs", [])
+                    if jobs and jobs[0] is not None:
+                        resolved_job_id = jobs[0]
+                        self.jobs[self.fits_path]["job_id"] = resolved_job_id
+                        self.save_jobs()
+                        
+                if not resolved_job_id:
+                    messagebox.showinfo("In attesa", "Astrometry.net non ha ancora creato un job di risoluzione per questo caricamento. Riprova tra poco.", parent=self.root)
+                    self.root.after(0, self.update_wcs_hint_visibility)
+                    return
+                    
+                job_url = f"https://nova.astrometry.net/api/jobs/{resolved_job_id}"
+                req = urllib.request.Request(job_url, headers={'User-Agent': 'Mozilla/5.0'})
+                with urllib.request.urlopen(req, context=ssl_context) as response:
+                    resp = json.loads(response.read().decode('utf-8'))
+                
+                job_status = resp.get("status")
+                
+                if job_status in ["pending", "solving"]:
+                    messagebox.showinfo("In elaborazione", f"Il server sta ancora elaborando il lavoro (Stato: {job_status}).\nSi prega di attendere ed eseguire la verifica più tardi.", parent=self.root)
+                    return
+                elif job_status == "failure":
+                    self.jobs[self.fits_path]["status"] = "failed"
+                    self.save_jobs()
+                    messagebox.showerror("Fallito", "Il server Astrometry.net non è riuscito a risolvere l'immagine.", parent=self.root)
+                    self.root.after(0, self.update_wcs_hint_visibility)
+                    return
+                elif job_status == "success":
+                    wcs_url = f"https://nova.astrometry.net/wcs_file/{resolved_job_id}"
+                    req = urllib.request.Request(wcs_url, headers={'User-Agent': 'Mozilla/5.0'})
+                    
+                    with tempfile.NamedTemporaryFile(suffix=".fits", delete=False) as tmp_f:
+                        tmp_path = tmp_f.name
+                        
+                    try:
+                        with urllib.request.urlopen(req, context=ssl_context) as response:
+                            with open(tmp_path, "wb") as f:
+                                f.write(response.read())
+                                
+                        solved_wcs = WCS(tmp_path)
+                        
+                        scale_factor = 4
+                        solved_wcs.wcs.crpix = [pix * scale_factor for pix in solved_wcs.wcs.crpix]
+                        if solved_wcs.wcs.has_cd():
+                            solved_wcs.wcs.cd = solved_wcs.wcs.cd / scale_factor
+                        elif solved_wcs.wcs.cdelt is not None:
+                            solved_wcs.wcs.cdelt = [delt / scale_factor for delt in solved_wcs.wcs.cdelt]
+                            
+                        self.wcs = solved_wcs
+                        
+                        wcs_cards = dict(solved_wcs.to_header())
+                        wcs_cache = {k: v for k, v in wcs_cards.items() if any(x in k for x in ['CRPIX', 'CRVAL', 'CD', 'CTYPE', 'CUNIT', 'PC'])}
+                        self.jobs[self.fits_path] = {
+                            "status": "success",
+                            "timestamp": time.time(),
+                            "wcs": wcs_cache,
+                            "job_id": resolved_job_id
+                        }
+                        self.save_jobs()
+                        
+                        # Merge WCS header cards into in-memory fits_header
+                        for key, val in wcs_cache.items():
+                            self.fits_header[key] = val
+                        self.fits_header['RADECSYS'] = 'ICRS'
+                        self.fits_header['EQUINOX'] = 2000.0
+                        self.wcs_saved_to_disk = False
+                        
+                        self.meta_tree.delete(*self.meta_tree.get_children())
+                        important_keys = ["OBJECT", "EXPTIME", "TELESCOP", "INSTRUME", "FILTER", "DATE-OBS", "BAYERPAT", "EQUINOX"]
+                        for key in important_keys:
+                            if key in self.fits_header:
+                                self.meta_tree.insert("", "end", text=key, values=(str(self.fits_header[key]),))
+                        for key, val in self.fits_header.items():
+                            if key not in important_keys and key.strip() != "":
+                                self.meta_tree.insert("", "end", text=key, values=(str(val),))
+                                
+                        self.root.after(0, lambda: self.render_canvas(is_dragging=False))
+                        self.root.after(0, self.update_wcs_hint_visibility)
+                        messagebox.showinfo("Plate Solve", "Plate solve completato con successo! Coordinate WCS caricate in memoria.", parent=self.root)
+                    finally:
+                        if os.path.exists(tmp_path):
+                            os.remove(tmp_path)
+                else:
+                    messagebox.showinfo("Info", f"Risposta del server sconosciuta: {job_status}", parent=self.root)
+            except Exception as checker_ex:
+                messagebox.showerror("Errore durante la verifica", f"Errore: {checker_ex}", parent=self.root)
+                
+        import threading
+        t = threading.Thread(target=checker_worker)
+        t.daemon = True
+        t.start()
+
+    def save_wcs_to_fits_file(self):
+        if self.wcs is None:
+            messagebox.showerror("Error", "No solved WCS coordinates available to save.", parent=self.root)
+            return
+        if not self.fits_path:
+            messagebox.showerror("Error", "No FITS file path defined.", parent=self.root)
+            return
+            
+        try:
+            from astropy.io import fits
+            with fits.open(self.fits_path, mode='update') as hdul:
+                header = hdul[0].header
+                for key in ['CRPIX1', 'CRPIX2', 'CRVAL1', 'CRVAL2', 
+                            'CD1_1', 'CD1_2', 'CD2_1', 'CD2_2', 
+                            'CDELT1', 'CDELT2', 'CTYPE1', 'CTYPE2',
+                            'CUNIT1', 'CUNIT2', 'RADECSYS', 'EQUINOX']:
+                    if key in header:
+                        del header[key]
+                
+                for key, val in self.wcs.to_header().items():
+                    if any(k in key for k in ['CRPIX', 'CRVAL', 'CD', 'CTYPE', 'CUNIT', 'PC']):
+                        header[key] = val
+                header['RADECSYS'] = 'ICRS'
+                header['EQUINOX'] = 2000.0
+                self.fits_header = header.copy()
+                self.wcs_saved_to_disk = True
+                
+            self.meta_tree.delete(*self.meta_tree.get_children())
+            important_keys = ["OBJECT", "EXPTIME", "TELESCOP", "INSTRUME", "FILTER", "DATE-OBS", "BAYERPAT", "EQUINOX"]
+            for key in important_keys:
+                if key in self.fits_header:
+                    self.meta_tree.insert("", "end", text=key, values=(str(self.fits_header[key]),))
+            for key, val in self.fits_header.items():
+                if key not in important_keys and key.strip() != "":
+                    self.meta_tree.insert("", "end", text=key, values=(str(val),))
+                    
+            messagebox.showinfo("Successo", "WCS salvato con successo nell'header del file FITS su disco!", parent=self.root)
+            self.btn_save_wcs_header.pack_forget()
+        except Exception as ex:
+            messagebox.showerror("Save Error", f"Impossibile salvare sul file FITS: {ex}", parent=self.root)
+
+    def clear_annotations(self):
+        self.push_state()
+        self.annotations = []
+        self.temp_marker = None
+        self.render_canvas(is_dragging=False)
+        messagebox.showinfo("Clear Target", "All annotations and target markers cleared.", parent=self.root)
+
+    def toggle_gaia_search_mode(self):
+        self.gaia_search_mode = not getattr(self, 'gaia_search_mode', False)
+        self.gaia_search_var.set(self.gaia_search_mode)
+        if self.gaia_search_mode:
+            self.calibration_mode = False
+            self.measurement_mode = False
+            self.crop_mode = False
+            self.annotation_mode = False
+            self.balance_mode = "None"
+            self.btn_calibration.config(text="Mark Calib Stars: Off", bg="#374151")
+            self.btn_measurement.config(text="Measure Target: Off", bg="#374151")
+            self.btn_crop.config(text="Crop Mode: Off", bg="#374151")
+            self.btn_annotate.config(text="Annotate Mode: Off", bg="#374151")
+            self.canvas.config(cursor="question_arrow")
+            messagebox.showinfo("Gaia Search", "Gaia Search Mode enabled.\nClick on any star to query Gaia DR3 catalog details.", parent=self.root)
+        else:
+            self.canvas.config(cursor="")
+            
+    def handle_gaia_search_click(self, px_x, px_y):
+        if not self.wcs:
+            messagebox.showwarning("Gaia Search", "Gaia queries require a valid plate-solved WCS model. Please solve the FITS image first.", parent=self.root)
+            return
+            
+        clicked_sky = self.wcs.pixel_to_world(px_x, px_y)
+        ra_deg = clicked_sky.ra.deg
+        dec_deg = clicked_sky.dec.deg
+        
+        h_orig, w_orig = self.debayered_cache.shape[:2]
+        self.temp_marker = {
+            'ratio_x': px_x / w_orig,
+            'ratio_y': px_y / h_orig,
+            'ra': ra_deg,
+            'dec': dec_deg,
+            'type': 'gaia_query'
+        }
+        self.render_canvas(is_dragging=False)
+        
+        # Open a loading/waiting window
+        info_win = tk.Toplevel(self.root)
+        info_win.title("Gaia Object Query")
+        info_win.geometry("550x500")
+        info_win.configure(bg=self.panel_color)
+        info_win.transient(self.root)
+        
+        lbl_loading = tk.Label(info_win, text=f"Querying Gaia DR3 database...\nRA: {ra_deg:.6f}°, DEC: {dec_deg:.6f}°", bg=self.panel_color, fg="#38bdf8", font=("Segoe UI", 11, "bold"))
+        lbl_loading.pack(pady=40)
+        
+        txt_info = tk.Text(info_win, bg=self.bg_color, fg=self.text_color, insertbackground="white", bd=0, highlightthickness=1, highlightbackground=self.control_bg, font=("Consolas", 10))
+        import webbrowser
+        txt_info.tag_configure("link", foreground="#38bdf8", underline=1)
+        txt_info.tag_bind("link", "<Enter>", lambda e: txt_info.config(cursor="hand2"))
+        txt_info.tag_bind("link", "<Leave>", lambda e: txt_info.config(cursor="xterm"))
+        
+        def run_query():
+            try:
+                import urllib.request
+                import urllib.parse
+                import ssl
+                
+                c_str = urllib.parse.quote(f"{ra_deg:.6f} {dec_deg:.6f}")
+                radius_arcmin = 0.16667 # 10 arcseconds
+                cols = "Source,RA_ICRS,DE_ICRS,Plx,e_Plx,pmRA,pmDE,Gmag,BPmag,RPmag,RV,Teff,phot_variable_flag"
+                url = f"https://vizier.cds.unistra.fr/viz-bin/asu-tsv?-source=I/355/gaiadr3&-c={c_str}&-c.r={radius_arcmin:f}&-c.u=arcmin&-out.form=|&-out.max=1&-out={cols}"
+                
+                req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+                ssl_context = ssl._create_unverified_context()
+                
+                content = ""
+                try:
+                    with urllib.request.urlopen(req, timeout=15, context=ssl_context) as response:
+                        content = response.read().decode('utf-8')
+                except Exception as ex:
+                    # Try Harvard mirror
+                    url_harv = url.replace("vizier.cds.unistra.fr", "vizier.cfa.harvard.edu")
+                    req_harv = urllib.request.Request(url_harv, headers={'User-Agent': 'Mozilla/5.0'})
+                    with urllib.request.urlopen(req_harv, timeout=15, context=ssl_context) as response:
+                        content = response.read().decode('utf-8')
+                        
+                lines = content.split('\n')
+                data_line = None
+                header_line = None
+                
+                for line in lines:
+                    if line.startswith("#"):
+                        continue
+                    if line.strip() == "":
+                        continue
+                    if "Source" in line and "RA_ICRS" in line:
+                        header_line = line.strip()
+                        continue
+                    if line.startswith("-"):
+                        continue
+                    
+                    # Ensure this is a real data line by checking that the first part is a Source ID (integer digits)
+                    parts = line.strip().split('|')
+                    if len(parts) > 0 and parts[0].strip().isdigit():
+                        data_line = line.strip()
+                        break
+                    
+                if not data_line:
+                    def _show_no_star():
+                        lbl_loading.pack_forget()
+                        lbl_err = tk.Label(info_win, text="No Gaia DR3 star found near this coordinate\n(within 10 arcseconds radius).", bg=self.panel_color, fg="#facc15", font=("Segoe UI", 11, "bold"))
+                        lbl_err.pack(pady=100)
+                    info_win.after(0, _show_no_star)
+                    return
+                    
+                headers = [h.strip() for h in header_line.split('|')]
+                values = [v.strip() for v in data_line.split('|')]
+                star_data = dict(zip(headers, values))
+                
+                cat_ra = ra_deg
+                cat_dec = dec_deg
+                # Calculate and project actual Gaia star position back to FITS pixels
+                try:
+                    cat_ra = float(star_data.get('RA_ICRS'))
+                    cat_dec = float(star_data.get('DE_ICRS'))
+                    c_px, c_py = self.wcs.world_to_pixel(SkyCoord(cat_ra, cat_dec, unit='deg', frame='icrs'))
+                    c_px = float(np.atleast_1d(c_px)[0])
+                    c_py = float(np.atleast_1d(c_py)[0])
+                    self.temp_marker['catalog_ratio_x'] = c_px / w_orig
+                    self.temp_marker['catalog_ratio_y'] = c_py / h_orig
+                except Exception:
+                    pass
+                
+                # Build beautiful report
+                report = []
+                report.append("==================================================")
+                report.append("            GAIA DR3 OBJECT METADATA             ")
+                report.append("==================================================")
+                report.append(f"Gaia Source ID : {star_data.get('Source', 'N/A')}")
+                report.append(f"Right Ascension: {star_data.get('RA_ICRS', 'N/A')} deg")
+                report.append(f"Declination    : {star_data.get('DE_ICRS', 'N/A')} deg")
+                report.append("")
+                
+                report.append("--- Astrometric Parameters ---")
+                plx_val = star_data.get('Plx', '')
+                e_plx_val = star_data.get('e_Plx', '')
+                if plx_val:
+                    try:
+                        plx = float(plx_val)
+                        e_plx = float(e_plx_val) if e_plx_val else 0.0
+                        report.append(f"Parallax       : {plx:.4f} +/- {e_plx:.4f} mas")
+                        if plx > 0:
+                            dist_pc = 1000.0 / plx
+                            dist_ly = dist_pc * 3.26156
+                            report.append(f"Distance       : {dist_pc:.1f} pc ({dist_ly:.1f} light years)")
+                        else:
+                            report.append("Distance       : Infinite (Negative or zero parallax)")
+                    except ValueError:
+                        report.append(f"Parallax       : {plx_val} mas")
+                else:
+                    report.append("Parallax       : N/A")
+                    
+                report.append(f"Proper Motion RA: {star_data.get('pmRA', 'N/A')} mas/yr")
+                report.append(f"Proper Motion DEC: {star_data.get('pmDE', 'N/A')} mas/yr")
+                report.append(f"Radial Velocity: {star_data.get('RV', 'N/A')} km/s")
+                report.append("")
+                
+                report.append("--- Photometric Magnitudes ---")
+                report.append(f"G Magnitude    : {star_data.get('Gmag', 'N/A')}")
+                bp = star_data.get('BPmag', '')
+                rp = star_data.get('RPmag', '')
+                report.append(f"BP Magnitude   : {bp if bp else 'N/A'}")
+                report.append(f"RP Magnitude   : {rp if rp else 'N/A'}")
+                if bp and rp:
+                    try:
+                        color_idx = float(bp) - float(rp)
+                        report.append(f"BP - RP Color  : {color_idx:.3f}")
+                    except ValueError:
+                        pass
+                report.append(f"Variable Star? : {'YES' if star_data.get('phot_variable_flag') == 'VARIABLE' else 'NO'}")
+                report.append("")
+                
+                report.append("--- Physical Properties ---")
+                teff_val = star_data.get('Teff', '')
+                if teff_val:
+                    try:
+                        teff = float(teff_val)
+                        report.append(f"Effective Temp : {teff:.1f} K")
+                        # Spectral class classification
+                        if teff >= 30000:
+                            sp_class = "O (Hot Blue Giant)"
+                        elif teff >= 10000:
+                            sp_class = "B (Blue-White Star)"
+                        elif teff >= 7500:
+                            sp_class = "A (White Main Sequence Star)"
+                        elif teff >= 6000:
+                            sp_class = "F (Yellow-White Star)"
+                        elif teff >= 5200:
+                            sp_class = "G (Yellow Dwarf - Sun-like)"
+                        elif teff >= 3700:
+                            sp_class = "K (Orange Dwarf)"
+                        else:
+                            sp_class = "M (Red Dwarf / Red Giant)"
+                        report.append(f"Spectral Class : Class {sp_class}")
+                    except ValueError:
+                        report.append(f"Effective Temp : {teff_val} K")
+                else:
+                    report.append("Effective Temp : N/A")
+                    
+                report.append("==================================================")
+                
+                final_text = "\n".join(report)
+                
+                def _show_result():
+                    lbl_loading.pack_forget()
+                    txt_info.pack(padx=10, pady=10, fill="both", expand=True)
+                    txt_info.insert(tk.END, final_text)
+                    
+                    url_aladin = f"https://aladin.cds.unistra.fr/AladinLite/?target={cat_ra:.6f}%20{cat_dec:.6f}&fov=0.15"
+                    txt_info.tag_bind("link", "<Button-1>", lambda e: webbrowser.open_new_tab(url_aladin))
+                    
+                    txt_info.insert(tk.END, "\n\n🔗 View on Aladin Lite (interactive sky map)", "link")
+                    txt_info.insert(tk.END, "\n==================================================")
+                    
+                    txt_info.config(state=tk.DISABLED)
+                    self.render_canvas(is_dragging=False)
+                info_win.after(0, _show_result)
+                
+            except Exception as query_ex:
+                def _show_err():
+                    lbl_loading.pack_forget()
+                    lbl_err = tk.Label(info_win, text=f"Query failed:\n{query_ex}", bg=self.panel_color, fg="#ef4444", font=("Segoe UI", 11, "bold"))
+                    lbl_err.pack(pady=100)
+                info_win.after(0, _show_err)
+                
+        import threading
+        t = threading.Thread(target=run_query)
+        t.daemon = True
+        t.start()
+    def clear_calibration_stars(self):
+        self.calib_stars = []
+        self.render_canvas(is_dragging=False)
+        messagebox.showinfo("Photometry", "Calibration stars list cleared.", parent=self.root)
+
+    def auto_calibrate_photometry(self):
+        if self.fits_data is None:
+            messagebox.showerror("Error", "Load a FITS file first.", parent=self.root)
+            return
+        if not self.wcs:
+            messagebox.showerror("Error", "WCS solution is required. Please plate-solve the image first.", parent=self.root)
+            return
+        if not self.catalog_stars:
+            messagebox.showerror("Error", "No catalog stars loaded. Please download Vizier Calibration Stars first.", parent=self.root)
+            return
+            
+        h_orig, w_orig = self.debayered_cache.shape[:2]
+        img_gray = 0.2126 * self.debayered_cache[:,:,0] + 0.7152 * self.debayered_cache[:,:,1] + 0.0722 * self.debayered_cache[:,:,2]
+        
+        self.calib_stars = []
+        matched_count = 0
+        
+        for star in self.catalog_stars:
+            if star.get('is_variable'):
+                continue
+                
+            # Project catalog star to pixels
+            try:
+                px_x, px_y = self.wcs.world_to_pixel(SkyCoord(star['ra'], star['dec'], unit='deg', frame='icrs'))
+                px_x = float(np.atleast_1d(px_x)[0])
+                px_y = float(np.atleast_1d(px_y)[0])
+            except Exception:
+                continue
+                
+            if 0 <= px_x < w_orig and 0 <= px_y < h_orig:
+                # Measure aperture flux at this catalog pixel coordinate
+                flux, cx, cy = self.measure_aperture_flux(img_gray, px_x, px_y)
+                
+                # Verify that:
+                # 1. Net flux is strong enough (>15.0) to avoid using weak background noise fluctuations
+                # 2. The centroid didn't drift more than 5.0 pixels from the projected catalog star coordinate
+                if flux > 15.0 and np.hypot(cx - px_x, cy - px_y) < 5.0:
+                    flux_r, _, _ = self.measure_aperture_flux(self.debayered_cache[:,:,0], px_x, px_y)
+                    flux_b, _, _ = self.measure_aperture_flux(self.debayered_cache[:,:,2], px_x, px_y)
+                    self.calib_stars.append({
+                        'x': cx,
+                        'y': cy,
+                        'flux': flux,
+                        'flux_r': flux_r,
+                        'flux_b': flux_b,
+                        'mag': star['mag'],
+                        'color_index': star.get('color_index', 0.0)
+                    })
+                    matched_count += 1
+                    
+        self.show_catalog_stars.set(True)
+        self.render_canvas(is_dragging=False)
+        
+        if matched_count > 0:
+            # Report the automated zero point
+            zp_list = [s['mag'] + 2.5 * np.log10(s['flux']) for s in self.calib_stars]
+            avg_zp = np.mean(zp_list)
+            std_zp = np.std(zp_list) if len(zp_list) > 1 else 0.0
+            
+            messagebox.showinfo("Auto-Calibration Success", 
+                                f"Photometry auto-calibrated successfully!\n\n"
+                                f"Matched stars: {matched_count}\n"
+                                f"Average Zero Point: {avg_zp:.3f} +/- {std_zp:.3f}\n"
+                                f"All {matched_count} stars are now selected as calibration stars (marked in green).",
+                                parent=self.root)
+        else:
+            messagebox.showwarning("Auto-Calibration Failure", 
+                                   "Could not match any catalog stars with sufficient signal-to-noise ratio in the image.\n"
+                                   "Ensure the image is plate-solved and stars are well-focused.",
+                                    parent=self.root)
+
+    def reset_sliders(self):
+        self.slider_red_offset.set(0)
+        self.slider_green_offset.set(0)
+        self.slider_blue_offset.set(0)
+        self.slider_brightness.set(0)
+        self.slider_contrast.set(0)
+        self.slider_smooth.set(0)
+        self.process_and_update(is_dragging=False)
+        
 try:
     from astropy.wcs.utils import proj_plane_pixel_scales
 except ImportError:
