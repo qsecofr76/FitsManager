@@ -62,11 +62,12 @@ FitsManager è un'applicazione desktop leggera per Windows dedicata alla visuali
 ---
 
 ## Rilascio Windows (EXE Pronto all'Uso)
-Per gli utenti Windows che preferiscono non installare Python, è presente una release standalone pronta all'uso.
-Trovate l'eseguibile precompilato e autoconsistente all'interno della cartella:
-📂 **`dist/FitsManager/FitsManager.exe`**
+Per gli utenti Windows che preferiscono non installare Python o configurare l'ambiente di sviluppo, è disponibile un pacchetto standalone già pronto.
+Potete scaricare l'archivio ZIP precompilato direttamente dalla sezione **Releases** di questo repository GitHub.
 
-Basta copiare o scaricare la cartella `dist/FitsManager` sul PC ed eseguire `FitsManager.exe` per avviare subito l'applicazione.
+Una volta scaricato lo ZIP:
+1. Estraete il contenuto in una cartella a vostra scelta.
+2. Eseguite il file **`FitsManager.exe`** all'interno della cartella estratta.
 
 ---
 ---
@@ -127,8 +128,9 @@ Basta copiare o scaricare la cartella `dist/FitsManager` sul PC ed eseguire `Fit
 ---
 
 ## Windows Release (Ready-to-Use EXE)
-For Windows users who want to run the app without installing Python, a precompiled standalone version is ready.
-You can find the standalone executable in the folder:
-📂 **`dist/FitsManager/FitsManager.exe`**
+For Windows users who prefer to run the application without installing Python or configuring development dependencies, a precompiled standalone release is available.
+You can download the packaged ZIP archive directly from the **Releases** section of this GitHub repository.
 
-Just copy or download the `dist/FitsManager` directory onto your computer and run `FitsManager.exe`.
+Once you have downloaded the ZIP file:
+1. Extract the contents to any folder of your choice.
+2. Run the **`FitsManager.exe`** executable file within the extracted folder.
