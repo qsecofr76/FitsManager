@@ -3737,8 +3737,8 @@ class FitsManagerApp:
         def parse_coordinate(ra_str, dec_str):
             from astropy.coordinates import SkyCoord
             import astropy.units as u
-            ra_str = ra_str.strip()
-            dec_str = dec_str.strip()
+            ra_str = str(ra_str).strip()
+            dec_str = str(dec_str).strip()
             try:
                 return SkyCoord(ra=float(ra_str), dec=float(dec_str), unit=(u.deg, u.deg), frame='icrs')
             except ValueError:
@@ -3857,8 +3857,8 @@ class FitsManagerApp:
         def parse_coordinate(ra_str, dec_str):
             from astropy.coordinates import SkyCoord
             import astropy.units as u
-            ra_str = ra_str.strip()
-            dec_str = dec_str.strip()
+            ra_str = str(ra_str).strip()
+            dec_str = str(dec_str).strip()
             try:
                 return SkyCoord(ra=float(ra_str), dec=float(dec_str), unit=(u.deg, u.deg), frame='icrs')
             except ValueError:
