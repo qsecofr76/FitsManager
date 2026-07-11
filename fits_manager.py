@@ -3628,44 +3628,47 @@ class FitsManagerApp:
             messagebox.showerror("Error", "Load a FITS file first.")
             return
 
-        init_ra = ""
-        init_dec = ""
-        
-        # Calculate WCS sky coordinates at the center of the currently viewed viewport
-        if self.debayered_cache is not None:
-            try:
-                h_orig, w_orig = self.debayered_cache.shape[:2]
-                cx_px = w_orig / 2.0
-                cy_px = h_orig / 2.0
+        # Prefill RA/Dec from header pointing keywords FIRST (most reliable target coordinate)
+        ra_val = ""
+        dec_val = ""
+        for key in ['RA', 'OBJCTRA', 'TELRA']:
+            if key in self.fits_header and self.fits_header[key] != "":
+                ra_val = self.fits_header[key]
+                break
+        for key in ['DEC', 'OBJCTDEC', 'TELDEC']:
+            if key in self.fits_header and self.fits_header[key] != "":
+                dec_val = self.fits_header[key]
+                break
                 
-                # If we have a computed visible viewport, find its center
-                if hasattr(self, 'src_left_int') and hasattr(self, 'src_top_int'):
-                    w_view = getattr(self, 'src_right_int', w_orig) - self.src_left_int
-                    h_view = getattr(self, 'src_bottom_int', h_orig) - self.src_top_int
-                    cx_px = self.src_left_int + w_view / 2.0
-                    cy_px = self.src_top_int + h_view / 2.0
+        if ra_val != "":
+            init_ra = str(ra_val)
+        if dec_val != "":
+            init_dec = str(dec_val)
+            
+        # If no telescope header coordinates exist, fallback to WCS center
+        if not init_ra or not init_dec:
+            if self.debayered_cache is not None and self.wcs is not None:
+                try:
+                    h_orig, w_orig = self.debayered_cache.shape[:2]
+                    cx_px = w_orig / 2.0
+                    cy_px = h_orig / 2.0
                     
-                # Add visual crop offsets if set
-                if getattr(self, 'visual_crop_box', None) is not None:
-                    start_x, start_y, end_x, end_y = self.visual_crop_box
-                    cx_px += start_x
-                    cy_px += start_y
-                    
-                if self.wcs is not None:
+                    if hasattr(self, 'src_left_int') and hasattr(self, 'src_top_int'):
+                        w_view = getattr(self, 'src_right_int', w_orig) - self.src_left_int
+                        h_view = getattr(self, 'src_bottom_int', h_orig) - self.src_top_int
+                        cx_px = self.src_left_int + w_view / 2.0
+                        cy_px = self.src_top_int + h_view / 2.0
+                        
+                    if getattr(self, 'visual_crop_box', None) is not None:
+                        start_x, start_y, end_x, end_y = self.visual_crop_box
+                        cx_px += start_x
+                        cy_px += start_y
+                        
                     center_sky = self.wcs.pixel_to_world(cx_px, cy_px)
                     init_ra = f"{center_sky.ra.deg:.6f}"
                     init_dec = f"{center_sky.dec.deg:.6f}"
-            except Exception:
-                pass
-                
-        if not init_ra:
-            # Prefill RA/Dec from header fallback
-            ra_val = self.fits_header.get('RA', self.fits_header.get('OBJCTRA', ''))
-            dec_val = self.fits_header.get('DEC', self.fits_header.get('OBJCTDEC', ''))
-            if ra_val != "":
-                init_ra = str(ra_val)
-            if dec_val != "":
-                init_dec = str(dec_val)
+                except Exception:
+                    pass
             
         init_focal = str(self.fits_header.get('FOCALLEN', ''))
         init_pixel = str(self.fits_header.get('XPIXSZ', self.fits_header.get('PIXSIZE', '')))
