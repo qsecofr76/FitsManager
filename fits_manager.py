@@ -579,6 +579,7 @@ class FitsManagerApp:
         self.gaia_search_mode = False
         self.gaia_search_var = tk.BooleanVar(value=False)
         self.show_annotations = tk.BooleanVar(value=True)
+        self.show_limiting_mag_stars = tk.BooleanVar(value=True)
         self.visual_crop_box = None
         self.calib_stars = []
         
@@ -649,6 +650,7 @@ class FitsManagerApp:
         color_menu.add_command(label="Auto Adaptation (Stretch)", command=self.apply_autostretch)
         color_menu.add_command(label="Sky Background Calibration...", command=self.enable_sky_balance)
         color_menu.add_command(label="White Star Calibration...", command=self.enable_star_balance)
+        color_menu.add_command(label="Remove Background Gradient", command=self.remove_background_gradient)
         color_menu.add_separator()
         color_menu.add_command(label="Reset Colors & Curves", command=self.reset_color_manipulation)
         self.menu_bar.add_cascade(label="Color Calibration", menu=color_menu)
@@ -669,6 +671,7 @@ class FitsManagerApp:
         astrom_menu.add_checkbutton(label="Show Asteroids", variable=self.show_asteroids, command=lambda: self.render_canvas(is_dragging=False))
         astrom_menu.add_separator()
         astrom_menu.add_command(label="Download DSS Sky Background", command=self.download_dss_background)
+        astrom_menu.add_command(label="Load PanStarrs background image", command=self.download_panstarrs_background)
         astrom_menu.add_separator()
         astrom_menu.add_command(label="Vizier star plate solver/astroalign (fast)", command=self.platesolve_vizier_astroalign)
         astrom_menu.add_separator()
@@ -683,6 +686,8 @@ class FitsManagerApp:
         astrom_menu.add_command(label="Download Vizier Calibration Stars", command=self.download_catalog_stars)
         astrom_menu.add_checkbutton(label="Show Vizier Calibration Stars", variable=self.show_catalog_stars, command=lambda: self.render_canvas(is_dragging=False))
         astrom_menu.add_command(label="Auto-Calibrate Photometry", command=self.auto_calibrate_photometry)
+        astrom_menu.add_command(label="Estimate Limiting Magnitude", command=self.estimate_limiting_magnitude)
+        astrom_menu.add_checkbutton(label="Show Magnitude Limit Stars", variable=self.show_limiting_mag_stars, command=lambda: self.render_canvas(is_dragging=False))
         astrom_menu.add_command(label="Clear Calibration Stars", command=self.clear_calibration_stars)
         self.menu_bar.add_cascade(label="Astrometry", menu=astrom_menu)
 
@@ -1059,117 +1064,204 @@ class FitsManagerApp:
             self.load_fits_from_path(file_path)
             
     def load_fits(self):
-        file_path = filedialog.askopenfilename(filetypes=[("FITS files", "*.fits *.fit"), ("All files", "*.*")])
+        file_path = filedialog.askopenfilename(filetypes=[
+            ("Image & FITS files", "*.fits *.fit *.png *.jpg *.jpeg *.tiff *.tif"),
+            ("FITS files", "*.fits *.fit"),
+            ("PNG images", "*.png"),
+            ("JPEG images", "*.jpg *.jpeg"),
+            ("TIFF images", "*.tiff *.tif"),
+            ("All files", "*.*")
+        ])
         if file_path:
             self.load_fits_from_path(file_path)
             
     def load_fits_from_path(self, file_path):
         try:
-            with fits.open(file_path) as hdul:
-                hdu = None
-                for h in hdul:
-                    if h.data is not None and h.data.ndim in [2, 3]:
-                        hdu = h
-                        break
+            ext = os.path.splitext(file_path)[1].lower()
+            is_fits = ext in ['.fits', '.fit']
+            
+            self.fits_path = file_path
+            self.debayered_cache = None
+            self.temp_marker = None
+            self.visual_crop_box = None
+            self.remove_gradient_active = False
+            self.background_gradient_map = None
+            self.catalog_stars = []
+            self.calib_stars = []
+            self.limiting_mag_check_stars = []
+            self.show_limiting_mag_stars.set(True)
+            self.show_catalog_stars.set(False)
+            self.asteroid_objects = []
+            self.show_asteroids.set(True)
+            self.loaded_dss_tiles = []
+            self.dss_blend_ratio.set(0.0)
+            
+            self.sky_sample_rgb = None
+            self.star_sample_rgb = None
+            self.balance_mode = "None"
+            if self.btn_bal_sky:
+                self.btn_bal_sky.config(bg="#374151")
+            if self.btn_bal_star:
+                self.btn_bal_star.config(bg="#374151")
+            self.var_grayscale.set(False)
+            self.var_invert.set(False)
+            
+            # Reset sliders
+            if hasattr(self, 'slider_red_offset') and self.slider_red_offset:
+                self.slider_red_offset.set(0)
+            if hasattr(self, 'slider_green_offset') and self.slider_green_offset:
+                self.slider_green_offset.set(0)
+            if hasattr(self, 'slider_blue_offset') and self.slider_blue_offset:
+                self.slider_blue_offset.set(0)
+            if hasattr(self, 'slider_brightness') and self.slider_brightness:
+                self.slider_brightness.set(0)
+            if hasattr(self, 'slider_contrast') and self.slider_contrast:
+                self.slider_contrast.set(0)
+            if hasattr(self, 'slider_smooth') and self.slider_smooth:
+                self.slider_smooth.set(0)
                 
-                if hdu is None:
-                    messagebox.showerror("Error", "No image data found in FITS file.")
-                    return
-                
-                self.fits_path = file_path
-                self.fits_header = hdu.header
-                self.wcs_saved_to_disk = ("CRVAL1" in self.fits_header)
-                self.fits_data = hdu.data.astype(np.float32)
-                self.debayered_cache = None
-                self.temp_marker = None
-                self.visual_crop_box = None
-                self.catalog_stars = []
-                self.calib_stars = []
-                self.show_catalog_stars.set(False)
-                self.asteroid_objects = []
-                self.show_asteroids.set(True)
-                
-                self.loaded_dss_tiles = []
-                self.dss_blend_ratio.set(0.0)
-                
-                self.sky_sample_rgb = None
-                self.star_sample_rgb = None
-                self.balance_mode = "None"
-                if self.btn_bal_sky:
-                    self.btn_bal_sky.config(bg="#374151")
-                if self.btn_bal_star:
-                    self.btn_bal_star.config(bg="#374151")
-                self.var_grayscale.set(False)
-                
-                if 'BAYERPAT' in self.fits_header:
-                    self.bayer_pattern.set(self.fits_header['BAYERPAT'].upper())
+            self.undo_stack.clear()
+            self.redo_stack.clear()
+            self.annotations.clear()
+            self.zoom_level = 1.0
+            self.pan_x = 0.0
+            self.pan_y = 0.0
+            self.mirror_horizontal = False
+            self.mirror_vertical = False
+            if self.btn_mirror_h:
+                self.btn_mirror_h.config(bg="#374151")
+            if self.btn_mirror_v:
+                self.btn_mirror_v.config(bg="#374151")
+            
+            for k in self.curves_widget.points_dict:
+                self.curves_widget.points_dict[k] = [(0, 0), (255, 255)]
+            self.curves_widget.redraw()
+            
+            has_ann = False
+            
+            if is_fits:
+                with fits.open(file_path) as hdul:
+                    hdu = None
+                    for h in hdul:
+                        if h.data is not None and h.data.ndim in [2, 3]:
+                            hdu = h
+                            break
+                    
+                    if hdu is None:
+                        messagebox.showerror("Error", "No image data found in FITS file.")
+                        return
+                    
+                    self.fits_header = hdu.header
+                    self.wcs_saved_to_disk = ("CRVAL1" in self.fits_header)
+                    self.fits_data = hdu.data.astype(np.float32)
+                    has_ann = ('ANNOTATIONS' in hdul)
+            else:
+                # Load non-FITS via PIL
+                from PIL import Image
+                pil_img = Image.open(file_path)
+                np_img = np.array(pil_img, dtype=np.float32)
+                if len(np_img.shape) == 3:
+                    if np_img.shape[2] == 4:
+                        np_img = np_img[:, :, :3]
+                    self.fits_data = np.mean(np_img, axis=2)
                 else:
-                    self.bayer_pattern.set("None")
+                    self.fits_data = np_img
                 
-                self.undo_stack.clear()
-                self.redo_stack.clear()
-                self.annotations.clear()
-                self.zoom_level = 1.0
-                self.pan_x = 0.0
-                self.pan_y = 0.0
-                self.mirror_horizontal = False
-                self.mirror_vertical = False
-                if self.btn_mirror_h:
-                    self.btn_mirror_h.config(bg="#374151")
-                if self.btn_mirror_v:
-                    self.btn_mirror_v.config(bg="#374151")
+                self.fits_header = fits.Header()
+                self.wcs_saved_to_disk = False
                 
-                self.observation_time = Time.now()
-                if 'DATE-OBS' in self.fits_header:
+                # Check for sidecar file: <filename>.info.json
+                sidecar_path = file_path + ".info.json"
+                sidecar_data = {}
+                if os.path.exists(sidecar_path):
+                    import json
                     try:
-                        self.observation_time = Time(self.fits_header['DATE-OBS'], format='isot')
+                        with open(sidecar_path, "r", encoding="utf-8") as sf:
+                            sidecar_data = json.load(sf)
                     except Exception:
                         pass
                 
-                for k in self.curves_widget.points_dict:
-                    self.curves_widget.points_dict[k] = [(0, 0), (255, 255)]
-                self.curves_widget.redraw()
+                if "header" in sidecar_data:
+                    for k, v in sidecar_data["header"].items():
+                        self.fits_header[k] = v
+                if "annotations" in sidecar_data:
+                    self.annotations = sidecar_data["annotations"]
                 
-                self.meta_tree.delete(*self.meta_tree.get_children())
-                important_keys = ["OBJECT", "EXPTIME", "TELESCOP", "INSTRUME", "FILTER", "DATE-OBS", "BAYERPAT", "EQUINOX"]
-                for key in important_keys:
-                    if key in self.fits_header:
-                        self.meta_tree.insert("", "end", text=key, values=(str(self.fits_header[key]),))
-                for key, val in self.fits_header.items():
-                    if key not in important_keys and key.strip() != "":
-                        self.meta_tree.insert("", "end", text=key, values=(str(val),))
+                # Fallback parameters from settings if missing
+                if 'FOCALLEN' not in self.fits_header or self.fits_header['FOCALLEN'] == "":
+                    if self.settings.get("focal_length"):
+                        self.fits_header['FOCALLEN'] = float(self.settings["focal_length"])
+                if 'XPIXSZ' not in self.fits_header or self.fits_header['XPIXSZ'] == "":
+                    if self.settings.get("pixel_size"):
+                        self.fits_header['XPIXSZ'] = float(self.settings["pixel_size"])
+                        self.fits_header['YPIXSZ'] = float(self.settings["pixel_size"])
                 
-                job_info = self.jobs.get(self.fits_path, {})
-                if job_info.get("status") == "success" and "wcs" in job_info:
-                    try:
-                        cached_header = fits.Header()
-                        for k, v in job_info["wcs"].items():
-                            cached_header[k] = v
-                        self.wcs = WCS(cached_header)
-                        if self.wcs and not self.wcs.has_celestial:
-                            self.wcs = None
-                    except Exception:
+                # Fallback observation time
+                if 'DATE-OBS' not in self.fits_header:
+                    mtime = os.path.getmtime(file_path)
+                    self.fits_header['DATE-OBS'] = Time(mtime, format='unix').isot
+            
+            # Set Bayer pattern
+            if 'BAYERPAT' in self.fits_header:
+                self.bayer_pattern.set(self.fits_header['BAYERPAT'].upper())
+            else:
+                self.bayer_pattern.set("None")
+                
+            # Set Observation time
+            self.observation_time = Time.now()
+            if 'DATE-OBS' in self.fits_header:
+                try:
+                    self.observation_time = Time(self.fits_header['DATE-OBS'], format='isot')
+                except Exception:
+                    pass
+            
+            # Metadata tree
+            self.meta_tree.delete(*self.meta_tree.get_children())
+            if not is_fits:
+                self.meta_tree.insert("", "end", text="IMAGE_TYPE", values=("Non-FITS (Loaded via PIL)",))
+                sidecar_path = file_path + ".info.json"
+                if os.path.exists(sidecar_path):
+                    self.meta_tree.insert("", "end", text="SIDECAR_INFO", values=("Loaded from .info.json",))
+            
+            important_keys = ["OBJECT", "EXPTIME", "TELESCOP", "INSTRUME", "FILTER", "DATE-OBS", "BAYERPAT", "EQUINOX"]
+            for key in important_keys:
+                if key in self.fits_header:
+                    self.meta_tree.insert("", "end", text=key, values=(str(self.fits_header[key]),))
+            for key, val in self.fits_header.items():
+                if key not in important_keys and key.strip() != "":
+                    self.meta_tree.insert("", "end", text=key, values=(str(val),))
+            
+            # Resolve WCS
+            job_info = self.jobs.get(self.fits_path, {})
+            if job_info.get("status") == "success" and "wcs" in job_info:
+                try:
+                    cached_header = fits.Header()
+                    for k, v in job_info["wcs"].items():
+                        cached_header[k] = v
+                    self.wcs = WCS(cached_header)
+                    if self.wcs and not self.wcs.has_celestial:
                         self.wcs = None
-                else:
-                    try:
-                        self.wcs = WCS(self.fits_header, naxis=2)
-                        if self.wcs and not self.wcs.has_celestial:
-                            self.wcs = None
-                    except Exception:
+                except Exception:
+                    self.wcs = None
+            else:
+                try:
+                    self.wcs = WCS(self.fits_header, naxis=2)
+                    if self.wcs and not self.wcs.has_celestial:
                         self.wcs = None
-                
-                self.update_wcs_hint_visibility()
-                
-                epoch_val = self.fits_header.get('EQUINOX', 2000.0)
-                if epoch_val == 2000.0:
-                    self.lbl_epoch_status.config(text=f"Header epoch: J2000 (detected)")
-                else:
-                    self.lbl_epoch_status.config(text=f"Header epoch: JNow / EQUINOX {epoch_val}")
-                
-                self.push_state()
-                self.process_and_update(is_dragging=False)
-                has_ann = ('ANNOTATIONS' in hdul)
-                
+                except Exception:
+                    self.wcs = None
+            
+            self.update_wcs_hint_visibility()
+            
+            epoch_val = self.fits_header.get('EQUINOX', 2000.0)
+            if epoch_val == 2000.0:
+                self.lbl_epoch_status.config(text=f"Header epoch: J2000 (detected)")
+            else:
+                self.lbl_epoch_status.config(text=f"Header epoch: JNow / EQUINOX {epoch_val}")
+            
+            self.push_state()
+            self.process_and_update(is_dragging=False)
+            
             if has_ann:
                 messagebox.showinfo("Importable Annotations", 
                                     "This FITS file contains annotations extension table.\n"
@@ -1177,7 +1269,7 @@ class FitsManagerApp:
                                     "Astrometry -> Annotations Manager -> Import Annotations from FITS.", 
                                     parent=self.root)
         except Exception as e:
-            messagebox.showerror("Error", f"Could not load FITS: {str(e)}")
+            messagebox.showerror("Error", f"Could not load image: {str(e)}")
 
     def push_state(self):
         state = {
@@ -1294,6 +1386,9 @@ class FitsManagerApp:
             self.update_debayer_cache()
             
         base_img = self.debayered_cache.copy()
+        if getattr(self, 'remove_gradient_active', False) and getattr(self, 'background_gradient_map', None) is not None:
+            base_img = np.clip(base_img - self.background_gradient_map, 0.0, None)
+            
         h, w = base_img.shape[:2]
         
         if is_dragging:
@@ -1424,10 +1519,12 @@ class FitsManagerApp:
             
         self.push_state()
         
-        # Reset color balance samplers and visual crop box
+        # Reset color balance samplers, visual crop box, and background gradient
         self.sky_sample_rgb = None
         self.star_sample_rgb = None
         self.visual_crop_box = None
+        self.remove_gradient_active = False
+        self.background_gradient_map = None
         
         # Reset curves points to linear defaults
         for k in self.curves_widget.points_dict:
@@ -1435,7 +1532,89 @@ class FitsManagerApp:
             
         self.curves_widget.redraw()
         self.process_and_update(is_dragging=False)
-        messagebox.showinfo("Reset", "Color Balance gains and Curves adjustments have been reset.")
+        messagebox.showinfo("Reset", "Color Balance gains, Curves adjustments, and Background Gradient have been reset.")
+
+    def remove_background_gradient(self):
+        if self.debayered_cache is None:
+            messagebox.showerror("Error", "Load an image first.", parent=self.root)
+            return
+            
+        self.root.config(cursor="watch")
+        self.root.update()
+        
+        try:
+            h, w = self.debayered_cache.shape[:2]
+            chans = self.debayered_cache.shape[2] if len(self.debayered_cache.shape) == 3 else 1
+            
+            # Estimate background using a 16x16 grid of block medians
+            grid_size = 16
+            block_h = max(4, h // grid_size)
+            block_w = max(4, w // grid_size)
+            
+            # Generate x, y coordinates for block centers
+            xs = []
+            ys = []
+            zs = [[] for _ in range(chans)]
+            
+            for r in range(grid_size):
+                y_c = r * block_h + block_h / 2.0
+                for c in range(grid_size):
+                    x_c = c * block_w + block_w / 2.0
+                    
+                    # Get block slice
+                    r_end = min(h, (r+1)*block_h)
+                    c_end = min(w, (c+1)*block_w)
+                    if chans > 1:
+                        block = self.debayered_cache[r*block_h:r_end, c*block_w:c_end]
+                    else:
+                        block = self.debayered_cache[r*block_h:r_end, c*block_w:c_end]
+                    if block.size == 0:
+                        continue
+                        
+                    xs.append(x_c)
+                    ys.append(y_c)
+                    if chans > 1:
+                        for ch in range(chans):
+                            zs[ch].append(np.median(block[:, :, ch]))
+                    else:
+                        zs[0].append(np.median(block))
+                        
+            xs = np.array(xs)
+            ys = np.array(ys)
+            
+            # Design matrix for 2nd order polynomial: 1, x, y, x^2, y^2, x*y
+            A = np.column_stack([np.ones_like(xs), xs, ys, xs**2, ys**2, xs*ys])
+            
+            # Fit polynomial coefficients for each channel
+            coefs = []
+            for ch in range(chans):
+                # Least squares fit
+                c_fit, _, _, _ = np.linalg.lstsq(A, zs[ch], rcond=None)
+                coefs.append(c_fit)
+                
+            # Evaluate the fitted polynomial across the entire image grid to create the gradient map
+            y_indices, x_indices = np.indices((h, w), dtype=np.float32)
+            
+            self.background_gradient_map = np.zeros_like(self.debayered_cache)
+            if chans > 1:
+                for ch in range(chans):
+                    c_fit = coefs[ch]
+                    z_fit = c_fit[0] + c_fit[1]*x_indices + c_fit[2]*y_indices + c_fit[3]*(x_indices**2) + c_fit[4]*(y_indices**2) + c_fit[5]*(x_indices*y_indices)
+                    z_fit_rel = z_fit - z_fit.min()
+                    self.background_gradient_map[:, :, ch] = z_fit_rel.astype(np.float32)
+            else:
+                c_fit = coefs[0]
+                z_fit = c_fit[0] + c_fit[1]*x_indices + c_fit[2]*y_indices + c_fit[3]*(x_indices**2) + c_fit[4]*(y_indices**2) + c_fit[5]*(x_indices*y_indices)
+                z_fit_rel = z_fit - z_fit.min()
+                self.background_gradient_map = z_fit_rel.astype(np.float32)
+                
+            self.remove_gradient_active = True
+            self.process_and_update(is_dragging=False)
+            messagebox.showinfo("Background Gradient Removal", "Background gradient removed successfully (cosmetic only).", parent=self.root)
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to remove background gradient:\n{str(e)}", parent=self.root)
+        finally:
+            self.root.config(cursor="")
 
     def apply_autostretch(self):
         if self.fits_data is None:
@@ -1852,6 +2031,16 @@ class FitsManagerApp:
                     self.draw_star_crosshair(draw, tx, ty, size=32, width=2)
                     draw.text((tx + 34, ty + 34), f"Target: RA={self.temp_marker['ra']}\nDEC={self.temp_marker['dec']}", fill="#f43f5e")
             
+        # Draw Limiting Magnitude Check Stars (colored circles)
+        if self.show_limiting_mag_stars.get() and getattr(self, 'limiting_mag_check_stars', None):
+            for star in self.limiting_mag_check_stars:
+                sx, sy = map_coords(star['x'], star['y'])
+                if 0 <= sx < crop_new_w and 0 <= sy < crop_new_h:
+                    r_star = 12
+                    color = star.get('color', '#facc15')
+                    draw.ellipse([sx - r_star, sy - r_star, sx + r_star, sy + r_star], outline=color, width=2)
+                    draw.text((sx + 14, sy - 8), f"G={star['mag']:.1f}", fill=color)
+
         # 3. Draw Catalog Stars Overlay (cyan circles)
         if self.show_catalog_stars.get() and self.catalog_stars and self.wcs:
             header_epoch = self.fits_header.get('EQUINOX', 2000.0)
@@ -2842,9 +3031,77 @@ class FitsManagerApp:
 
     def query_mpc_asteroids(self):
         if self.fits_data is None or self.wcs is None:
-            messagebox.showerror("Error", "A FITS file with valid WCS headers must be loaded first.")
+            messagebox.showerror("Error", "An image with valid WCS headers must be loaded first.")
             return
             
+        # Open Observation Time Dialog
+        default_time_str = ""
+        if 'DATE-OBS' in self.fits_header:
+            default_time_str = str(self.fits_header['DATE-OBS'])
+        elif getattr(self, 'observation_time', None) is not None:
+            default_time_str = self.observation_time.isot
+        else:
+            from astropy.time import Time
+            default_time_str = Time.now().isot
+            
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Observation Time")
+        dialog.geometry("380x180")
+        dialog.configure(bg=self.panel_color)
+        dialog.transient(self.root)
+        dialog.grab_set()
+        
+        lbl_info = tk.Label(dialog, text="Verify Observation Time (UTC ISO format):\nYYYY-MM-DDTHH:MM:SS", bg=self.panel_color, fg=self.text_color, font=("Segoe UI", 9, "bold"))
+        lbl_info.pack(pady=15)
+        
+        ent_time = tk.Entry(dialog, bg=self.bg_color, fg=self.text_color, insertbackground="white", bd=0, highlightthickness=1, highlightbackground=self.control_bg, width=30)
+        ent_time.insert(0, default_time_str)
+        ent_time.pack(pady=5)
+        
+        confirmed_time = [None]
+        
+        def on_confirm():
+            time_str = ent_time.get().strip()
+            from astropy.time import Time
+            try:
+                parsed = Time(time_str, format='isot')
+                confirmed_time[0] = parsed
+                dialog.destroy()
+            except Exception as parse_err:
+                messagebox.showerror("Invalid Date", f"Please enter a valid ISO date-time string:\n{parse_err}", parent=dialog)
+                
+        btn_frame = tk.Frame(dialog, bg=self.panel_color)
+        btn_frame.pack(pady=10, fill="x")
+        
+        btn_ok = tk.Button(btn_frame, text="Confirm & Search", command=on_confirm, bg="#10b981", fg="white", font=("Segoe UI", 9, "bold"), bd=0, padx=15, pady=5)
+        btn_ok.pack(side="right", padx=20)
+        
+        btn_cancel = tk.Button(btn_frame, text="Cancel", command=dialog.destroy, bg="#374151", fg="white", font=("Segoe UI", 9, "bold"), bd=0, padx=15, pady=5)
+        btn_cancel.pack(side="right", padx=10)
+        
+        self.root.wait_window(dialog)
+        
+        if confirmed_time[0] is None:
+            return
+            
+        self.observation_time = confirmed_time[0]
+        self.fits_header['DATE-OBS'] = self.observation_time.isot
+        
+        ext = os.path.splitext(self.fits_path)[1].lower()
+        if ext not in ['.fits', '.fit']:
+            sidecar_path = self.fits_path + ".info.json"
+            import json
+            try:
+                sidecar_data = {}
+                if os.path.exists(sidecar_path):
+                    with open(sidecar_path, "r", encoding="utf-8") as sf:
+                        sidecar_data = json.load(sf)
+                sidecar_data["header"] = dict(self.fits_header)
+                with open(sidecar_path, "w", encoding="utf-8") as sf:
+                    json.dump(sidecar_data, sf, indent=4)
+            except Exception:
+                pass
+                
         self.root.config(cursor="watch")
         self.root.update()
         
@@ -3309,9 +3566,354 @@ class FitsManagerApp:
                 dist_arcmin = np.sqrt(d_ra**2 + d_dec**2) * 60.0
                 # A 45 arcminute tile has a half-width of 22.5 arcminutes.
                 # If coordinate is within 20 arcminutes of the center, it is covered!
-                if dist_arcmin < 20.0:
-                    return True
         return False
+
+    def get_cached_panstarrs_tile(self, ra, dec, size):
+        import os
+        import numpy as np
+        if not os.path.exists("panstarrs_cache"):
+            return None
+        for filename in os.listdir("panstarrs_cache"):
+            if filename.startswith("panstarrs_") and filename.endswith(".fits"):
+                parts = filename.replace(".fits", "").split("_")
+                if len(parts) == 4:
+                    try:
+                        file_ra = float(parts[1])
+                        file_dec = float(parts[2])
+                        file_size = float(parts[3])
+                        
+                        d_dec = dec - file_dec
+                        d_ra = ((ra - file_ra) * np.cos(np.radians((dec + file_dec) / 2.0))) % 360.0
+                        if d_ra > 180.0:
+                            d_ra = 360.0 - d_ra
+                        dist_arcmin = np.sqrt(d_ra**2 + d_dec**2) * 60.0
+                        
+                        if dist_arcmin < 5.0 and file_size >= size - 1.0:
+                            return os.path.join("panstarrs_cache", filename)
+                    except Exception:
+                        pass
+        return None
+
+    def download_panstarrs_background(self):
+        if self.fits_data is None or self.wcs is None:
+            messagebox.showerror("Error", "A FITS file with valid WCS headers must be loaded first.", parent=self.root)
+            return
+            
+        self.root.config(cursor="watch")
+        self.root.update()
+        
+        log_win = tk.Toplevel(self.root)
+        log_win.title("PanSTARRS Cutout Service Monitor")
+        log_win.geometry("600x450")
+        log_win.configure(bg="#1f2937")
+        log_win.transient(self.root)
+        
+        lbl = tk.Label(log_win, text="Retrieving PanSTARRS DR2 Reference Survey Image...", bg="#1f2937", fg="white", font=("Segoe UI", 10, "bold"))
+        lbl.pack(pady=(10, 5))
+        
+        from tkinter import ttk
+        style = ttk.Style(log_win)
+        style.theme_use('clam')
+        style.configure("PS1.Horizontal.TProgressbar", troughcolor="#111827", background="#10b981", bordercolor="#1f2937", lightcolor="#10b981", darkcolor="#10b981")
+        
+        progress_bar = ttk.Progressbar(log_win, style="PS1.Horizontal.TProgressbar", orient="horizontal", mode="determinate", length=560)
+        progress_bar.pack(pady=5, padx=15, fill="x")
+        
+        txt_log = tk.Text(log_win, bg="#111827", fg="#10b981", insertbackground="white", font=("Consolas", 9), bd=0, padx=10, pady=10)
+        
+        self.dss_download_cancelled = False
+        
+        def log_msg(msg):
+            def _log():
+                txt_log.insert(tk.END, msg + "\n")
+                txt_log.see(tk.END)
+            log_win.after(0, _log)
+            
+        def cancel_download():
+            self.dss_download_cancelled = True
+            log_msg("[INFO] Cancellation requested by user...")
+            
+        btn_cancel = tk.Button(log_win, text="Cancel Download", command=cancel_download, bg="#ef4444", fg="white", font=("Segoe UI", 9, "bold"), bd=0, padx=15, pady=6)
+        btn_cancel.pack(side="bottom", pady=15)
+        
+        txt_log.pack(side="top", fill="both", expand=True, padx=15, pady=(0, 10))
+            
+        def set_progress(value, max_val):
+            def _prog():
+                progress_bar.config(maximum=max_val, value=value)
+            log_win.after(0, _prog)
+            
+        self.loaded_dss_tiles = []
+        
+        def add_tile_to_memory(file_path, r_val=None, d_val=None, should_render=True):
+            try:
+                import os
+                if r_val is None or d_val is None:
+                    parts = os.path.basename(file_path).replace(".fits", "").split("_")
+                    if len(parts) == 4:
+                        r_val = float(parts[1])
+                        d_val = float(parts[2])
+                with fits.open(file_path) as hdul:
+                    dss_data = hdul[0].data.astype(np.float32)
+                    dss_header = hdul[0].header
+                    wcs_obj = WCS(dss_header, naxis=2)
+                
+                # Background median matching to eliminate seams (stacco) between tiles
+                dss_data = np.nan_to_num(dss_data, nan=np.nanmedian(dss_data))
+                bg_med = np.nanmedian(dss_data)
+                dss_data = dss_data - bg_med
+                
+                vmax = np.nanpercentile(dss_data, 99.5)
+                if np.isnan(vmax) or vmax <= 0:
+                    vmax = 1.0
+                    
+                # Lock background (0) to gray level 15, and stars to 235
+                dss_raw = np.clip(15.0 + (dss_data / vmax) * 220.0, 0, 255).astype(np.uint8)
+                
+                self.loaded_dss_tiles.append({
+                    'data': dss_raw,
+                    'wcs': wcs_obj,
+                    'path': file_path,
+                    'ra': r_val,
+                    'dec': d_val
+                })
+                
+                if should_render:
+                    self.dss_blend_ratio.set(0.50)
+                    self.dss_warped_cache = None
+                    self.render_canvas(is_dragging=False)
+                    self.root.config(cursor="")
+            except Exception as e:
+                log_msg(f"[ERROR] Failed to load tile {file_path}: {e}")
+
+        import os
+        import numpy as np
+        from astropy.coordinates import SkyCoord
+        import astropy.units as u
+        
+        h_orig, w_orig = self.debayered_cache.shape[:2]
+        center_coord = self.wcs.pixel_to_world(w_orig / 2.0, h_orig / 2.0)
+        target_ra = center_coord.ra.deg
+        target_dec = center_coord.dec.deg
+        
+        if os.path.exists("panstarrs_cache"):
+            log_msg("[INFO] Preloading overlapping files from cache...")
+            for filename in os.listdir("panstarrs_cache"):
+                if filename.startswith("panstarrs_") and filename.endswith(".fits"):
+                    parts = filename.replace(".fits", "").split("_")
+                    if len(parts) == 4:
+                        try:
+                            file_ra = float(parts[1])
+                            file_dec = float(parts[2])
+                            file_size = float(parts[3])
+                            
+                            d_dec = target_dec - file_dec
+                            d_ra = ((target_ra - file_ra) * np.cos(np.radians((target_dec + file_dec) / 2.0))) % 360.0
+                            if d_ra > 180.0:
+                                d_ra = 360.0 - d_ra
+                            dist_deg = np.sqrt(d_ra**2 + d_dec**2)
+                            
+                            max_dist_deg = (h_orig + w_orig)/2.0 * 0.70
+                            if dist_deg < max_dist_deg:
+                                log_msg(f"[CACHE] Auto-loading cached tile: {filename}")
+                                add_tile_to_memory(os.path.join("panstarrs_cache", filename), file_ra, file_dec, should_render=False)
+                        except Exception:
+                            pass
+            if self.loaded_dss_tiles:
+                self.dss_blend_ratio.set(0.50)
+                self.dss_warped_cache = None
+                self.render_canvas(is_dragging=False)
+                self.root.config(cursor="")
+
+        def finish_all_done():
+            self.root.config(cursor="")
+            log_msg("[SUCCESS] All sky tiles retrieved and merged!")
+            messagebox.showinfo("PanSTARRS Sky", "Successfully loaded PanSTARRS reference sky.\nAdjust 'DSS Sky Blend' slider below to crossfade.", parent=self.root)
+
+        def finish_error(err):
+            self.root.config(cursor="")
+            log_msg(f"[ERROR] Failed to download PanSTARRS: {err}")
+            messagebox.showerror("Error", f"Failed to retrieve PanSTARRS image: {err}", parent=self.root)
+
+        def worker():
+            try:
+                if not os.path.exists("panstarrs_cache"):
+                    os.makedirs("panstarrs_cache")
+                    
+                tile_size_arcmin = 15.0
+                size_pix = 3600
+                step_deg = 0.20
+                
+                c_center = self.wcs.pixel_to_world(w_orig / 2.0, h_orig / 2.0)
+                c_right = self.wcs.pixel_to_world(w_orig, h_orig / 2.0)
+                c_top = self.wcs.pixel_to_world(w_orig / 2.0, h_orig)
+                width_deg = c_center.separation(c_right).deg * 2.0
+                height_deg = c_center.separation(c_top).deg * 2.0
+                
+                num_steps_x = int(np.ceil(width_deg / step_deg))
+                num_steps_y = int(np.ceil(height_deg / step_deg))
+                num_steps_x = np.clip(num_steps_x, 1, 5)
+                num_steps_y = np.clip(num_steps_y, 1, 5)
+                
+                half_x = (num_steps_x - 1) / 2.0
+                dx_vals = [(i - half_x) * step_deg for i in range(num_steps_x)]
+                
+                half_y = (num_steps_y - 1) / 2.0
+                dy_vals = [(i - half_y) * step_deg for i in range(num_steps_y)]
+                
+                cos_dec = np.cos(np.radians(target_dec))
+                cos_dec_val = max(1e-6, cos_dec)
+                
+                candidate_coords = []
+                for dx in dx_vals:
+                    for dy in dy_vals:
+                        cand_ra = (target_ra + dx / cos_dec_val) % 360.0
+                        cand_dec = target_dec + dy
+                        if -90.0 <= cand_dec <= 90.0:
+                            candidate_coords.append((cand_ra, cand_dec))
+                            
+                grid_points = []
+                for r, d in candidate_coords:
+                    if abs(r - target_ra) < 0.001 and abs(d - target_dec) < 0.001:
+                        grid_points.insert(0, (r, d))
+                        continue
+                    try:
+                        px, py = self.wcs.world_to_pixel(SkyCoord(ra=r*u.deg, dec=d*u.deg, frame='icrs'))
+                        if -100 <= px < w_orig + 100 and -100 <= py < h_orig + 100:
+                            grid_points.append((r, d))
+                    except Exception:
+                        pass
+                        
+                remaining_points = []
+                for r, d in grid_points:
+                    covered = False
+                    for tile in self.loaded_dss_tiles:
+                        tile_ra = tile.get('ra')
+                        tile_dec = tile.get('dec')
+                        if tile_ra is not None and tile_dec is not None:
+                            d_dec = d - tile_dec
+                            d_ra = ((r - tile_ra) * np.cos(np.radians((d + tile_dec) / 2.0))) % 360.0
+                            if d_ra > 180.0:
+                                d_ra = 360.0 - d_ra
+                            dist_arcmin = np.sqrt(d_ra**2 + d_dec**2) * 60.0
+                            if dist_arcmin < 10.0:
+                                covered = True
+                                break
+                    if not covered:
+                        remaining_points.append((r, d))
+                        
+                log_msg(f"[INFO] Generated footprint grid: {len(remaining_points)} PanSTARRS tiles to load.")
+                
+                import urllib.request
+                import urllib.parse
+                import ssl
+                
+                ssl_context = ssl._create_unverified_context()
+                
+                for idx, (tile_ra, tile_dec) in enumerate(remaining_points):
+                    if self.dss_download_cancelled:
+                        raise Exception("Download cancelled by user.")
+                        
+                    log_msg(f"\n--- Loading tile {idx+1}/{len(remaining_points)} at RA={tile_ra:.4f}, DEC={tile_dec:.4f} ---")
+                    
+                    cached_path = self.get_cached_panstarrs_tile(tile_ra, tile_dec, tile_size_arcmin)
+                    if cached_path:
+                        log_msg(f"[CACHE] Found local cache: {os.path.basename(cached_path)}")
+                        log_win.after(0, lambda p=cached_path: add_tile_to_memory(p))
+                        continue
+                        
+                    filenames_url = f"https://ps1images.stsci.edu/cgi-bin/ps1filenames.py?ra={tile_ra}&dec={tile_dec}&filters=r"
+                    log_msg(f"[QUERY] Resolving file path from PS1 database...")
+                    
+                    req1 = urllib.request.Request(filenames_url, headers={'User-Agent': 'Mozilla/5.0'})
+                    filename_path = None
+                    with urllib.request.urlopen(req1, timeout=20, context=ssl_context) as response1:
+                        content = response1.read().decode('utf-8')
+                        lines = content.strip().split('\n')
+                        if len(lines) > 1:
+                            header = lines[0].split()
+                            if 'filename' in header:
+                                fn_idx = header.index('filename')
+                                row1 = lines[1].split()
+                                if len(row1) > fn_idx:
+                                    filename_path = row1[fn_idx]
+                                    
+                    if not filename_path:
+                        filenames_url = f"https://ps1images.stsci.edu/cgi-bin/ps1filenames.py?ra={tile_ra}&dec={tile_dec}&filters=g"
+                        req1 = urllib.request.Request(filenames_url, headers={'User-Agent': 'Mozilla/5.0'})
+                        with urllib.request.urlopen(req1, timeout=20, context=ssl_context) as response1:
+                            content = response1.read().decode('utf-8')
+                            lines = content.strip().split('\n')
+                            if len(lines) > 1:
+                                header = lines[0].split()
+                                if 'filename' in header:
+                                    fn_idx = header.index('filename')
+                                    row1 = lines[1].split()
+                                    if len(row1) > fn_idx:
+                                        filename_path = row1[fn_idx]
+                                        
+                    if not filename_path:
+                        log_msg(f"[WARN] No PanSTARRS coverage found for RA={tile_ra:.4f}, DEC={tile_dec:.4f}. Skipping tile.")
+                        continue
+                        
+                    cutout_url = f"https://ps1images.stsci.edu/cgi-bin/fitscut.cgi?ra={tile_ra}&dec={tile_dec}&size={size_pix}&format=fits&red={filename_path}"
+                    log_msg(f"[QUERY] Fetching PanSTARRS FITS...")
+                    
+                    req2 = urllib.request.Request(cutout_url, headers={'User-Agent': 'Mozilla/5.0'})
+                    with urllib.request.urlopen(req2, timeout=30, context=ssl_context) as response2:
+                        content_length = response2.headers.get('Content-Length')
+                        total_bytes = int(content_length) if content_length else 0
+                        if total_bytes:
+                            log_msg(f"[INFO] File size: {total_bytes / 1024.0 / 1024.0:.2f} MB")
+                            set_progress(0, total_bytes)
+                        else:
+                            set_progress(0, 100)
+                            
+                        img_data = bytearray()
+                        downloaded_bytes = 0
+                        chunk_size = 65536
+                        last_log_time = 0
+                        
+                        while True:
+                            if self.dss_download_cancelled:
+                                raise Exception("Download cancelled by user.")
+                            chunk = response2.read(chunk_size)
+                            if not chunk:
+                                break
+                            img_data.extend(chunk)
+                            downloaded_bytes += len(chunk)
+                            
+                            if total_bytes:
+                                set_progress(downloaded_bytes, total_bytes)
+                                import time
+                                current_time = time.time()
+                                if current_time - last_log_time > 1.5 or downloaded_bytes == total_bytes:
+                                    pct = (downloaded_bytes / total_bytes) * 100
+                                    log_msg(f"[INFO] Downloading: {pct:.1f}%")
+                                    last_log_time = current_time
+                            else:
+                                set_progress(downloaded_bytes % 100, 100)
+                                
+                    if b"html" in img_data[:100].lower() or b"<!doctype" in img_data[:100].lower():
+                        raise Exception("STScI fitscut service returned an HTML error page.")
+                        
+                    cache_filename = f"panstarrs_{tile_ra:.6f}_{tile_dec:.6f}_{tile_size_arcmin:.1f}.fits"
+                    save_path = os.path.join("panstarrs_cache", cache_filename)
+                    with open(save_path, "wb") as f:
+                        f.write(img_data)
+                    log_msg(f"[CACHE] Saved to cache: {cache_filename}")
+                    
+                    log_win.after(0, lambda p=save_path: add_tile_to_memory(p))
+                    
+                log_win.after(0, finish_all_done)
+                
+            except Exception as e:
+                log_win.after(0, lambda: finish_error(e))
+                
+        import threading
+        download_thread = threading.Thread(target=worker)
+        download_thread.daemon = True
+        download_thread.start()
 
     def download_dss_background(self):
         if self.fits_data is None or self.wcs is None:
@@ -3381,9 +3983,17 @@ class FitsManagerApp:
                     dss_header = hdul[0].header
                     wcs_obj = WCS(dss_header, naxis=2)
                 
-                # Stretch/normalize data
-                vmin, vmax = np.percentile(dss_data, [1.0, 99.5])
-                dss_raw = np.clip((dss_data - vmin) / (vmax - vmin) * 255.0, 0, 255).astype(np.uint8)
+                # Background median matching to eliminate seams (stacco) between tiles
+                dss_data = np.nan_to_num(dss_data, nan=np.nanmedian(dss_data))
+                bg_med = np.nanmedian(dss_data)
+                dss_data = dss_data - bg_med
+                
+                vmax = np.nanpercentile(dss_data, 99.5)
+                if np.isnan(vmax) or vmax <= 0:
+                    vmax = 1.0
+                    
+                # Lock background (0) to gray level 15, and stars to 235
+                dss_raw = np.clip(15.0 + (dss_data / vmax) * 220.0, 0, 255).astype(np.uint8)
                 
                 # Save parsed tile in list
                 self.loaded_dss_tiles.append({
@@ -3486,11 +4096,32 @@ class FitsManagerApp:
                 # We request a tile size of 45 arcminutes (fast query size)
                 tile_size_arcmin = 45.0
                 
-                # 2. Build grid coordinates to cover the FITS footprint
+                # 2. Build grid coordinates to cover the FITS footprint dynamically
                 # Step size is 30 arcminutes to guarantee substantial overlap
                 step_deg = 0.5
-                dx_vals = [-step_deg, 0.0, step_deg]
-                dy_vals = [-step_deg, 0.0, step_deg]
+                
+                # Estimate the width and height of the image in degrees
+                c_center = self.wcs.pixel_to_world(w_orig / 2.0, h_orig / 2.0)
+                c_right = self.wcs.pixel_to_world(w_orig, h_orig / 2.0)
+                c_top = self.wcs.pixel_to_world(w_orig / 2.0, h_orig)
+                
+                width_deg = c_center.separation(c_right).deg * 2.0
+                height_deg = c_center.separation(c_top).deg * 2.0
+                
+                num_steps_x = int(np.ceil(width_deg / step_deg))
+                num_steps_y = int(np.ceil(height_deg / step_deg))
+                
+                # Limit the steps between 1 and 5 (covers up to a 5x5 grid surface)
+                num_steps_x = np.clip(num_steps_x, 1, 5)
+                num_steps_y = np.clip(num_steps_y, 1, 5)
+                
+                half_x = (num_steps_x - 1) / 2.0
+                dx_vals = [(i - half_x) * step_deg for i in range(num_steps_x)]
+                
+                half_y = (num_steps_y - 1) / 2.0
+                dy_vals = [(i - half_y) * step_deg for i in range(num_steps_y)]
+                
+                log_msg(f"[INFO] Calculated dynamic coverage grid: {num_steps_x}x{num_steps_y} surface")
                 
                 # Cosine factor for RA offset
                 cos_dec = np.cos(np.radians(target_dec))
@@ -3833,8 +4464,29 @@ class FitsManagerApp:
                 self.fits_header['EQUINOX'] = 2000.0
                 self.wcs_saved_to_disk = False
                 
+                # If non-FITS file, save to sidecar file: <filename>.info.json
+                ext = os.path.splitext(self.fits_path)[1].lower()
+                if ext not in ['.fits', '.fit']:
+                    sidecar_path = self.fits_path + ".info.json"
+                    sidecar_data = {
+                        "header": dict(self.fits_header),
+                        "annotations": self.annotations
+                    }
+                    import json
+                    try:
+                        with open(sidecar_path, "w", encoding="utf-8") as sf:
+                            json.dump(sidecar_data, sf, indent=4)
+                        log_msg(f"[INFO] Sidecar file saved: {os.path.basename(sidecar_path)}")
+                    except Exception as sf_err:
+                        log_msg(f"[WARN] Failed to write sidecar file: {sf_err}")
+                
                 self.wcs = solved_wcs
                 self.meta_tree.delete(*self.meta_tree.get_children())
+                if ext not in ['.fits', '.fit']:
+                    self.meta_tree.insert("", "end", text="IMAGE_TYPE", values=("Non-FITS (Loaded via PIL)",))
+                    sidecar_path = self.fits_path + ".info.json"
+                    if os.path.exists(sidecar_path):
+                        self.meta_tree.insert("", "end", text="SIDECAR_INFO", values=("Loaded from .info.json",))
                 important_keys = ["OBJECT", "EXPTIME", "TELESCOP", "INSTRUME", "FILTER", "DATE-OBS", "BAYERPAT", "EQUINOX"]
                 for key in important_keys:
                     if key in self.fits_header:
@@ -4677,6 +5329,34 @@ class FitsManagerApp:
                             pass
                 mags.append(mag_val)
                 
+            ext = os.path.splitext(self.fits_path)[1].lower()
+            is_fits = ext in ['.fits', '.fit']
+            
+            if not is_fits:
+                # For non-FITS files, save to sidecar file
+                sidecar_path = self.fits_path + ".info.json"
+                import json
+                try:
+                    # Load existing sidecar data if present
+                    sidecar_data = {}
+                    if os.path.exists(sidecar_path):
+                        try:
+                            with open(sidecar_path, "r", encoding="utf-8") as sf:
+                                sidecar_data = json.load(sf)
+                        except Exception:
+                            pass
+                    
+                    # Update annotations and header
+                    sidecar_data["annotations"] = self.annotations
+                    sidecar_data["header"] = dict(self.fits_header)
+                    
+                    with open(sidecar_path, "w", encoding="utf-8") as sf:
+                        json.dump(sidecar_data, sf, indent=4)
+                    messagebox.showinfo("Success", f"Saved {len(self.annotations)} annotations to sidecar file:\n{os.path.basename(sidecar_path)}", parent=self.root)
+                except Exception as sf_err:
+                    messagebox.showerror("Error", f"Failed to save annotations to sidecar:\n{sf_err}", parent=self.root)
+                return
+
             # Create columns
             col_x = fits.Column(name='X_RATIO', format='D', array=x_ratios)
             col_y = fits.Column(name='Y_RATIO', format='D', array=y_ratios)
@@ -4699,7 +5379,36 @@ class FitsManagerApp:
 
     def import_annotations_from_fits(self):
         if not self.fits_path:
-            messagebox.showerror("Error", "No FITS file open.", parent=self.root)
+            messagebox.showerror("Error", "No image open.", parent=self.root)
+            return
+            
+        ext = os.path.splitext(self.fits_path)[1].lower()
+        is_fits = ext in ['.fits', '.fit']
+        
+        if not is_fits:
+            sidecar_path = self.fits_path + ".info.json"
+            if not os.path.exists(sidecar_path):
+                messagebox.showinfo("Import Annotations", f"No sidecar file found at:\n{os.path.basename(sidecar_path)}", parent=self.root)
+                return
+            try:
+                import json
+                with open(sidecar_path, "r", encoding="utf-8") as sf:
+                    sidecar_data = json.load(sf)
+                imported = sidecar_data.get("annotations", [])
+                if imported:
+                    self.push_state()
+                    existing_coords = {(ann['x'], ann['y']) for ann in self.annotations}
+                    added_count = 0
+                    for item in imported:
+                        if (item['x'], item['y']) not in existing_coords:
+                            self.annotations.append(item)
+                            added_count += 1
+                    self.render_canvas(is_dragging=False)
+                    messagebox.showinfo("Import Success", f"Imported {added_count} new annotations from sidecar (total annotations: {len(self.annotations)}).", parent=self.root)
+                else:
+                    messagebox.showinfo("Import Annotations", "No annotations records found in the sidecar file.", parent=self.root)
+            except Exception as e:
+                messagebox.showerror("Error", f"Failed to import from sidecar:\n{str(e)}", parent=self.root)
             return
             
         try:
@@ -5063,7 +5772,313 @@ class FitsManagerApp:
             messagebox.showwarning("Auto-Calibration Failure", 
                                    "Could not match any catalog stars with sufficient signal-to-noise ratio in the image.\n"
                                    "Ensure the image is plate-solved and stars are well-focused.",
-                                    parent=self.root)
+                                   parent=self.root)
+
+    def estimate_limiting_magnitude(self):
+        if self.fits_data is None:
+            messagebox.showerror("Error", "Load an image first.", parent=self.root)
+            return
+        if not self.wcs:
+            messagebox.showerror("Error", "WCS solution is required. Please plate-solve the image first.", parent=self.root)
+            return
+            
+        self.root.config(cursor="watch")
+        self.root.update()
+        
+        log_win = tk.Toplevel(self.root)
+        log_win.title("Limiting Magnitude Query Monitor")
+        log_win.geometry("600x380")
+        log_win.configure(bg="#1f2937")
+        log_win.transient(self.root)
+        
+        lbl = tk.Label(log_win, text="Querying Vizier Gaia DR3 for deep calibration stars...", bg="#1f2937", fg="white", font=("Segoe UI", 10, "bold"))
+        lbl.pack(pady=(10, 5))
+        
+        txt_log = tk.Text(log_win, bg="#111827", fg="#eab308", insertbackground="white", font=("Consolas", 9), bd=0, padx=10, pady=10)
+        txt_log.pack(fill="both", expand=True, padx=15, pady=(0, 15))
+        
+        def log_msg(msg):
+            txt_log.insert(tk.END, msg + "\n")
+            txt_log.see(tk.END)
+            log_win.update()
+            
+        try:
+            h_orig, w_orig = self.debayered_cache.shape[:2]
+            img_gray = 0.2126 * self.debayered_cache[:,:,0] + 0.7152 * self.debayered_cache[:,:,1] + 0.0722 * self.debayered_cache[:,:,2]
+            
+            # 1. Target center coordinate and image diagonal radius
+            center_coord = self.wcs.pixel_to_world(w_orig / 2.0, h_orig / 2.0)
+            ra_deg = center_coord.ra.deg
+            dec_deg = center_coord.dec.deg
+            log_msg(f"[INFO] Targeting image center: RA={ra_deg:.6f} deg, DEC={dec_deg:.6f} deg")
+            
+            corner_coord = self.wcs.pixel_to_world(0, 0)
+            radius_deg = center_coord.separation(corner_coord).deg
+            radius_arcmin = radius_deg * 60.0
+            radius_arcmin = np.clip(radius_arcmin, 5.0, 45.0)
+            log_msg(f"[INFO] Search radius: {radius_arcmin:.2f} arcminutes")
+            
+            # 2. Download from Vizier Gaia DR3
+            import urllib.request
+            import urllib.parse
+            import ssl
+            
+            ssl_context = ssl._create_unverified_context()
+            c_val = f"{ra_deg:.6f} {dec_deg:.6f}".replace(',', '.')
+            c_str = urllib.parse.quote(c_val)
+            
+            hosts = ["vizier.cds.unistra.fr", "vizier.cfa.harvard.edu"]
+            lines = []
+            for host in hosts:
+                url = f"https://{host}/viz-bin/asu-tsv?-source=I/355/gaiadr3&-c={c_str}&-c.r={radius_arcmin:f}&-c.u=arcmin&-out.form=|&-out.add=RA_ICRS,DE_ICRS&-out=Gmag,bp_rp,phot_variable_flag&-sort=_r&-out.max=4000"
+                log_msg(f"[QUERY] Fetching deep Gaia catalog from: {host}...")
+                req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+                try:
+                    with urllib.request.urlopen(req, timeout=12, context=ssl_context) as response:
+                        lines = response.read().decode('utf-8').split('\n')
+                    if len(lines) > 50:
+                        log_msg(f"[SUCCESS] Retrieved {len(lines)} raw lines from {host}")
+                        break
+                except Exception as query_err:
+                    log_msg(f"[WARN] Failed mirror {host}: {query_err}")
+                    
+            if not lines:
+                raise Exception("Failed to download Gaia DR3 catalog from Vizier mirrors.")
+                
+            # 3. Parse Gaia stars
+            header_found = False
+            cols = {}
+            local_catalog = []
+            for line in lines:
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                parts = line.split('|')
+                if not header_found:
+                    if any("RA" in p or "coord" in p or "_RAJ" in p for p in parts):
+                        header_found = True
+                        cols = {p.strip(): i for i, p in enumerate(parts)}
+                    continue
+                if line.startswith("-"):
+                    continue
+                if len(parts) >= 3:
+                    try:
+                        ra_idx = cols.get("RA_ICRS", cols.get("_RA_ICRS", 0))
+                        dec_idx = cols.get("DE_ICRS", cols.get("_DE_ICRS", 1))
+                        ra_star = float(parts[ra_idx])
+                        dec_star = float(parts[dec_idx])
+                        
+                        gmag_idx = cols.get("Gmag", cols.get("_Gmag", -1))
+                        if gmag_idx == -1 or parts[gmag_idx].strip() == "":
+                            continue
+                        mag = float(parts[gmag_idx])
+                        
+                        var_flag = ""
+                        var_idx = cols.get("phot_variable_flag", -1)
+                        if var_idx != -1 and var_idx < len(parts):
+                            var_flag = parts[var_idx].strip()
+                        if var_flag == "VARIABLE":
+                            continue
+                            
+                        local_catalog.append({
+                            'ra': ra_star,
+                            'dec': dec_star,
+                            'mag': mag
+                        })
+                    except Exception:
+                        pass
+                        
+            log_msg(f"[INFO] Parsed {len(local_catalog)} Gaia stars from catalog.")
+            if not local_catalog:
+                raise Exception("No usable stars parsed from Gaia DR3 catalog.")
+                
+            # 4. Perform automatic calibration internally
+            log_msg("[CALIB] Autocalibrating zero point internally...")
+            zp_values = []
+            for star in local_catalog:
+                # Use stars between mag 12 and 18 for high reliability
+                if 12.0 <= star['mag'] <= 18.0:
+                    try:
+                        px_x, px_y = self.wcs.world_to_pixel(SkyCoord(star['ra'], star['dec'], unit='deg', frame='icrs'))
+                        px_x = float(np.atleast_1d(px_x)[0])
+                        px_y = float(np.atleast_1d(px_y)[0])
+                    except Exception:
+                        continue
+                    if 0 <= px_x < w_orig and 0 <= px_y < h_orig:
+                        flux, cx, cy = self.measure_aperture_flux(img_gray, px_x, px_y)
+                        if flux > 15.0 and np.hypot(cx - px_x, cy - px_y) < 4.0:
+                            zp = star['mag'] + 2.5 * np.log10(flux)
+                            zp_values.append(zp)
+                            
+            if len(zp_values) < 5:
+                # Fallback to broader range
+                for star in local_catalog:
+                    if 10.0 <= star['mag'] <= 19.5:
+                        try:
+                            px_x, px_y = self.wcs.world_to_pixel(SkyCoord(star['ra'], star['dec'], unit='deg', frame='icrs'))
+                            px_x = float(np.atleast_1d(px_x)[0])
+                            px_y = float(np.atleast_1d(px_y)[0])
+                        except Exception:
+                            continue
+                        if 0 <= px_x < w_orig and 0 <= px_y < h_orig:
+                            flux, cx, cy = self.measure_aperture_flux(img_gray, px_x, px_y)
+                            if flux > 5.0 and np.hypot(cx - px_x, cy - px_y) < 4.0:
+                                zp = star['mag'] + 2.5 * np.log10(flux)
+                                zp_values.append(zp)
+                                
+            if not zp_values:
+                raise Exception("Could not calibrate photometry: no matching catalog stars detected in the image.")
+                
+            median_zp = np.median(zp_values)
+            mad = np.median(np.abs(zp_values - median_zp))
+            valid_zps = [zp for zp in zp_values if abs(zp - median_zp) <= max(0.5, 3.0 * mad)]
+            zero_point = np.mean(valid_zps) if valid_zps else median_zp
+            log_msg(f"[CALIB] Internal Zero Point determined: {zero_point:.3f} (using {len(valid_zps)} reference stars)")
+            
+            # 5. Measure detection rates in 1-mag bins
+            log_msg("[ANALYSIS] Estimating detection statistics for all catalog stars...")
+            bin_edges = np.arange(8.0, 23.0, 1.0)
+            bins_data = {int(b): {'total': 0, 'detected': 0, 'snrs': [], 'stars': []} for b in bin_edges[:-1]}
+            
+            for star in local_catalog:
+                try:
+                    px_x, px_y = self.wcs.world_to_pixel(SkyCoord(star['ra'], star['dec'], unit='deg', frame='icrs'))
+                    px_x = float(np.atleast_1d(px_x)[0])
+                    px_y = float(np.atleast_1d(px_y)[0])
+                except Exception:
+                    continue
+                    
+                if 0 <= px_x < w_orig and 0 <= px_y < h_orig:
+                    mag = star['mag']
+                    bin_idx = int(np.floor(mag))
+                    if bin_idx not in bins_data:
+                        continue
+                        
+                    bins_data[bin_idx]['total'] += 1
+                    
+                    flux, cx, cy = self.measure_aperture_flux(img_gray, px_x, px_y)
+                    
+                    iy, ix = int(round(cy)), int(round(cx))
+                    crop_size = 15
+                    y_min, y_max = max(0, iy - crop_size), min(h_orig, iy + crop_size + 1)
+                    x_min, x_max = max(0, ix - crop_size), min(w_orig, ix + crop_size + 1)
+                    patch = img_gray[y_min:y_max, x_min:x_max]
+                    yy, xx = np.ogrid[y_min:y_max, x_min:x_max]
+                    dists = np.hypot(xx - cx, yy - cy)
+                    bg_mask = (dists >= 10) & (dists <= 15)
+                    bg_pixels = patch[bg_mask]
+                    bg_std = np.std(bg_pixels) if len(bg_pixels) > 0 else 1.0
+                    if bg_std <= 0.0:
+                        bg_std = 1.0
+                        
+                    num_source_pixels = (dists <= 6).sum()
+                    snr = flux / (np.sqrt(num_source_pixels) * bg_std)
+                    
+                    is_detected = flux > 8.0 and snr >= 2.5 and np.hypot(cx - px_x, cy - px_y) < 4.0
+                    
+                    if is_detected:
+                        bins_data[bin_idx]['detected'] += 1
+                        bins_data[bin_idx]['snrs'].append(snr)
+                        bins_data[bin_idx]['stars'].append({'x': cx, 'y': cy, 'mag': mag})
+            
+            # Select check stars: 2 per bin, including only the first red bin, skipping steps with < 2 stars
+            self.limiting_mag_check_stars = []
+            red_bin_included = False
+            
+            for b in sorted(bins_data.keys()):
+                d = bins_data[b]
+                if len(d['stars']) < 2:
+                    continue
+                    
+                ratio = (d['detected'] / d['total']) * 100.0 if d['total'] > 0 else 0.0
+                med_snr = np.median(d['snrs']) if d['snrs'] else 0.0
+                
+                # Determine category and color
+                if ratio < 15.0 or med_snr < 5.0:
+                    category = "red"
+                    color_hex = "#ef4444"
+                elif ratio < 50.0 or med_snr < 10.0:
+                    category = "yellow"
+                    color_hex = "#f59e0b"
+                else:
+                    category = "green"
+                    color_hex = "#10b981"
+                    
+                if category == "red":
+                    if red_bin_included:
+                        continue
+                    red_bin_included = True
+                
+                # Select 2 stars with spatial separation (at least 150px apart if possible)
+                s1 = d['stars'][0]
+                s2 = None
+                for candidate in d['stars'][1:]:
+                    dist = np.hypot(candidate['x'] - s1['x'], candidate['y'] - s1['y'])
+                    if dist >= 150.0:
+                        s2 = candidate
+                        break
+                if s2 is None:
+                    # Fallback to the star furthest from s1
+                    s2 = max(d['stars'][1:], key=lambda s: np.hypot(s['x'] - s1['x'], s['y'] - s1['y']))
+                    
+                self.limiting_mag_check_stars.append({'x': s1['x'], 'y': s1['y'], 'mag': s1['mag'], 'color': color_hex})
+                self.limiting_mag_check_stars.append({'x': s2['x'], 'y': s2['y'], 'mag': s2['mag'], 'color': color_hex})
+            
+            self.render_canvas(is_dragging=False)
+            log_win.destroy()
+            
+            report_win = tk.Toplevel(self.root)
+            report_win.title("Limiting Magnitude Estimate")
+            report_win.geometry("650x450")
+            report_win.configure(bg="#1f2937")
+            report_win.transient(self.root)
+            
+            lbl_title = tk.Label(report_win, text="Vizier Gaia DR3 Calibration Stars detection report:", bg="#1f2937", fg="white", font=("Segoe UI", 10, "bold"))
+            lbl_title.pack(pady=10)
+            
+            txt_report = tk.Text(report_win, bg="#111827", insertbackground="white", font=("Consolas", 10), bd=0, padx=15, pady=15)
+            
+            # Configure Tkinter tags for color-coding
+            txt_report.tag_configure("green", foreground="#10b981")
+            txt_report.tag_configure("yellow", foreground="#f59e0b")
+            txt_report.tag_configure("red", foreground="#ef4444")
+            txt_report.tag_configure("white", foreground="white")
+            
+            txt_report.insert(tk.END, "=============================================================================\n", "white")
+            txt_report.insert(tk.END, f"{'Magnitude Step':<16} | {'Total Stars':<12} | {'Detected':<10} | {'Ratio (%)':<10} | {'Median SNR':<10}\n", "white")
+            txt_report.insert(tk.END, "=============================================================================\n", "white")
+            
+            for b in sorted(bins_data.keys()):
+                d = bins_data[b]
+                if d['total'] > 0:
+                    ratio = (d['detected'] / d['total']) * 100.0
+                    med_snr = np.median(d['snrs']) if d['snrs'] else 0.0
+                    line_str = f"[{b:2d}.0 - {b+1:2d}.0)     | {d['total']:<12d} | {d['detected']:<10d} | {ratio:<10.1f} | {med_snr:<10.2f}\n"
+                    
+                    # Categorize row
+                    if ratio < 15.0 or med_snr < 5.0:
+                        tag = "red"
+                    elif ratio < 50.0 or med_snr < 10.0:
+                        tag = "yellow"
+                    else:
+                        tag = "green"
+                else:
+                    line_str = f"[{b:2d}.0 - {b+1:2d}.0)     | {'0':<12} | {'0':<10} | {'0.0%':<10} | {'N/A':<10}\n"
+                    tag = "white"
+                    
+                txt_report.insert(tk.END, line_str, tag)
+                
+            txt_report.insert(tk.END, "=============================================================================\n", "white")
+            txt_report.config(state="disabled")
+            txt_report.pack(fill="both", expand=True, padx=15, pady=5)
+            
+            btn_close = tk.Button(report_win, text="Close", command=report_win.destroy, bg="#374151", fg="white", font=("Segoe UI", 9, "bold"), bd=0, padx=20, pady=6)
+            btn_close.pack(pady=10)
+            
+        except Exception as ex:
+            messagebox.showerror("Error", f"Failed to estimate limiting magnitude:\n{ex}", parent=self.root)
+        finally:
+            self.root.config(cursor="")
 
     def reset_sliders(self):
         self.slider_red_offset.set(0)
