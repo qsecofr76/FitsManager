@@ -788,7 +788,8 @@ class FitsManagerApp:
         self.btn_save_wcs_header = ttk.Button(coord_lf, text="Save WCS to FITS Header", command=self.save_wcs_to_fits_file)
         # We won't pack it initially; update_wcs_hint_visibility will manage it
         
-        self.lbl_wcs_hint = tk.Label(coord_lf, text="⚠️ No WCS projection found\nTry: Astrometry -> Plate Solve", bg="black", fg="#facc15", font=("Segoe UI", 9, "bold"), bd=1, relief="solid", padx=5, pady=5, justify="center")
+        self.lbl_wcs_hint = tk.Label(coord_lf, text="⚠️ No WCS projection found\nClick here to Plate Solve (Vizier)", bg="black", fg="#facc15", font=("Segoe UI", 9, "bold", "underline"), bd=1, relief="solid", padx=5, pady=5, justify="center", cursor="hand2")
+        self.lbl_wcs_hint.bind("<Button-1>", self.on_wcs_hint_click)
         
         # Debayer Settings
         debayer_lf = ttk.LabelFrame(scrollable_frame, text="Debayer")
@@ -4081,13 +4082,13 @@ class FitsManagerApp:
                 if status == "pending":
                     self.lbl_wcs_hint.config(
                         text=f"⏳ Online job pending (Job ID: {job_info.get('job_id')})\nUse Astrometry -> Check Status...",
-                        bg="black", fg="#38bdf8"
+                        bg="black", fg="#38bdf8", font=("Segoe UI", 9, "bold"), cursor=""
                     )
                     self.lbl_wcs_hint.pack(fill="x", padx=5, pady=5)
                 else:
                     self.lbl_wcs_hint.config(
-                        text="⚠️ No WCS projection found\nTry: Astrometry -> Plate Solve",
-                        bg="black", fg="#facc15"
+                        text="⚠️ No WCS projection found\nClick here to Plate Solve (Vizier)",
+                        bg="black", fg="#facc15", font=("Segoe UI", 9, "bold", "underline"), cursor="hand2"
                     )
                     self.lbl_wcs_hint.pack(fill="x", padx=5, pady=5)
                 self.btn_save_wcs_header.pack_forget()
@@ -4097,6 +4098,12 @@ class FitsManagerApp:
                     self.btn_save_wcs_header.pack(fill="x", padx=5, pady=5)
                 else:
                     self.btn_save_wcs_header.pack_forget()
+
+    def on_wcs_hint_click(self, event):
+        job_info = self.jobs.get(self.fits_path, {}) if self.fits_path else {}
+        status = job_info.get("status", "")
+        if status != "pending" and self.wcs is None:
+            self.platesolve_vizier_astroalign()
 
     def load_settings(self):
         import json

@@ -19,7 +19,7 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=[],
+    excludes=['sphinx', 'alabaster', 'babel', 'docutils', 'coverage'],
     noarchive=False,
     optimize=0,
 )
