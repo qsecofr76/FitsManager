@@ -578,6 +578,8 @@ class FitsManagerApp:
         self.photometry_mode = False
         self.gaia_search_mode = False
         self.gaia_search_var = tk.BooleanVar(value=False)
+        self.show_annotations = tk.BooleanVar(value=True)
+        self.visual_crop_box = None
         self.calib_stars = []
         
         # Ensure dss_cache directory exists
@@ -653,8 +655,15 @@ class FitsManagerApp:
         
         # Astrometry dropdown
         astrom_menu = tk.Menu(self.menu_bar, tearoff=0)
+        
+        self.ann_menu = tk.Menu(astrom_menu, tearoff=0)
+        self.ann_menu.add_command(label="Save Annotations to FITS", command=self.save_annotations_to_fits)
+        self.ann_menu.add_command(label="Import Annotations from FITS", command=self.import_annotations_from_fits)
+        
         astrom_menu.add_command(label="Mark Target RA/Dec...", command=self.mark_radec_input)
         astrom_menu.add_command(label="Clear Target/Annotations", command=self.clear_annotations)
+        astrom_menu.add_checkbutton(label="Show Annotations", variable=self.show_annotations, command=lambda: self.render_canvas(is_dragging=False))
+        astrom_menu.add_cascade(label="Annotations Manager", menu=self.ann_menu)
         astrom_menu.add_separator()
         astrom_menu.add_command(label="Query MPC Asteroids (Mag < 21)", command=self.query_mpc_asteroids)
         astrom_menu.add_checkbutton(label="Show Asteroids", variable=self.show_asteroids, command=lambda: self.render_canvas(is_dragging=False))
@@ -876,8 +885,7 @@ class FitsManagerApp:
         self.vbar = tk.Scrollbar(canvas_container, orient="vertical")
         self.vbar.pack(side="right", fill="y")
         
-        self.canvas = tk.Canvas(canvas_container, bg="#111", highlightthickness=0,
-                                xscrollcommand=self.hbar.set, yscrollcommand=self.vbar.set)
+        self.canvas = tk.Canvas(canvas_container, bg="#111", highlightthickness=0)
         self.canvas.pack(side="left", fill="both", expand=True)
         
         self.hbar.config(command=self.on_hbar_scroll)
@@ -1020,14 +1028,12 @@ class FitsManagerApp:
             cmd = args[0]
             if cmd == "moveto":
                 val = float(args[1])
-                # Estimate new pan_x based on scrollbar position
                 canvas_w = self.canvas.winfo_width()
                 if self.processed_img_full is not None:
                     h, w = self.processed_img_full.shape[:2]
                     fit_ratio = min(canvas_w / w, self.canvas.winfo_height() / h)
                     total_w = w * fit_ratio * self.zoom_level
-                    margin = (canvas_w - total_w) / 2.0
-                    self.pan_x = -(val * total_w) - margin
+                    self.pan_x = ((total_w - canvas_w) / 2.0) - (val * total_w)
             self.render_canvas(is_dragging=False)
 
     def on_vbar_scroll(self, *args):
@@ -1041,8 +1047,7 @@ class FitsManagerApp:
                     h, w = self.processed_img_full.shape[:2]
                     fit_ratio = min(self.canvas.winfo_width() / w, canvas_h / h)
                     total_h = h * fit_ratio * self.zoom_level
-                    margin = (canvas_h - total_h) / 2.0
-                    self.pan_y = -(val * total_h) - margin
+                    self.pan_y = ((total_h - canvas_h) / 2.0) - (val * total_h)
             self.render_canvas(is_dragging=False)
 
     def handle_file_drop(self, event):
@@ -1076,6 +1081,7 @@ class FitsManagerApp:
                 self.fits_data = hdu.data.astype(np.float32)
                 self.debayered_cache = None
                 self.temp_marker = None
+                self.visual_crop_box = None
                 self.catalog_stars = []
                 self.calib_stars = []
                 self.show_catalog_stars.set(False)
@@ -1161,7 +1167,14 @@ class FitsManagerApp:
                 
                 self.push_state()
                 self.process_and_update(is_dragging=False)
+                has_ann = ('ANNOTATIONS' in hdul)
                 
+            if has_ann:
+                messagebox.showinfo("Importable Annotations", 
+                                    "This FITS file contains annotations extension table.\n"
+                                    "You can import them via:\n"
+                                    "Astrometry -> Annotations Manager -> Import Annotations from FITS.", 
+                                    parent=self.root)
         except Exception as e:
             messagebox.showerror("Error", f"Could not load FITS: {str(e)}")
 
@@ -1175,7 +1188,8 @@ class FitsManagerApp:
             'grayscale': self.var_grayscale.get(),
             'annotations': list(self.annotations),
             'sky_sample': self.sky_sample_rgb,
-            'star_sample': self.star_sample_rgb
+            'star_sample': self.star_sample_rgb,
+            'visual_crop_box': self.visual_crop_box
         }
         self.undo_stack.append(state)
         if len(self.undo_stack) > 30:
@@ -1212,6 +1226,7 @@ class FitsManagerApp:
         self.annotations = list(state['annotations'])
         self.sky_sample_rgb = state['sky_sample']
         self.star_sample_rgb = state['star_sample']
+        self.visual_crop_box = state.get('visual_crop_box', None)
         
         self.process_and_update(is_dragging=False)
 
@@ -1369,6 +1384,11 @@ class FitsManagerApp:
         if smooth_val > 0:
             ksize = 2 * smooth_val + 1
             img_processed = cv2.GaussianBlur(img_processed, (ksize, ksize), 0)
+            
+        # Apply visual crop if active
+        if self.visual_crop_box is not None:
+            start_x, start_y, end_x, end_y = self.visual_crop_box
+            img_processed = img_processed[start_y:end_y, start_x:end_x]
         
         # 3b. Convert to Grayscale (B&W) if toggled
         if self.var_grayscale.get():
@@ -1403,9 +1423,10 @@ class FitsManagerApp:
             
         self.push_state()
         
-        # Reset color balance samplers
+        # Reset color balance samplers and visual crop box
         self.sky_sample_rgb = None
         self.star_sample_rgb = None
+        self.visual_crop_box = None
         
         # Reset curves points to linear defaults
         for k in self.curves_widget.points_dict:
@@ -1629,6 +1650,19 @@ class FitsManagerApp:
         new_w = int(w * total_scale)
         new_h = int(h * total_scale)
         
+        # Enforce panning clamps to stay within visible borders
+        if new_w > canvas_w:
+            max_pan_x = (new_w - canvas_w) / 2.0
+            self.pan_x = float(np.clip(self.pan_x, -max_pan_x, max_pan_x))
+        else:
+            self.pan_x = 0.0
+            
+        if new_h > canvas_h:
+            max_pan_y = (new_h - canvas_h) / 2.0
+            self.pan_y = float(np.clip(self.pan_y, -max_pan_y, max_pan_y))
+        else:
+            self.pan_y = 0.0
+            
         self.img_scale_ratio = total_scale
         
         # Calculate viewport bounds
@@ -1758,31 +1792,44 @@ class FitsManagerApp:
                 
         draw = ImageDraw.Draw(resized_pil)
         
-        # 1. Draw Saved Annotations
-        for ann in self.annotations:
-            rx, ry = ann['x'], ann['y']
+        # 1. Coordinate mapping helper for visual crop offsets
+        h_orig, w_orig = self.debayered_cache.shape[:2]
+        
+        def map_coords(px_x, px_y):
+            x_val = px_x
+            y_val = px_y
+            if self.visual_crop_box is not None:
+                start_x, start_y, end_x, end_y = self.visual_crop_box
+                x_val = x_val - start_x
+                y_val = y_val - start_y
+                
+            rx = x_val / w
+            ry = y_val / h
             if self.mirror_horizontal:
                 rx = 1.0 - rx
             if self.mirror_vertical:
                 ry = 1.0 - ry
                 
-            ax = int(rx * new_w) - int(src_left_int * total_scale)
-            ay = int(ry * new_h) - int(src_top_int * total_scale)
+            sx = int(rx * new_w) - int(src_left_int * total_scale)
+            sy = int(ry * new_h) - int(src_top_int * total_scale)
+            return sx, sy
             
-            if 0 <= ax < crop_new_w and 0 <= ay < crop_new_h:
-                self.draw_star_crosshair(draw, ax, ay, size=24, width=2)
-                draw.text((ax + 26, ay + 26), ann['text'], fill=self.green_bright)
+        # Draw Saved Annotations (if enabled)
+        if self.show_annotations.get():
+            for ann in self.annotations:
+                px = ann['x'] * w_orig
+                py = ann['y'] * h_orig
+                ax, ay = map_coords(px, py)
+                
+                if 0 <= ax < crop_new_w and 0 <= ay < crop_new_h:
+                    self.draw_star_crosshair(draw, ax, ay, size=24, width=2)
+                    draw.text((ax + 26, ay + 26), ann['text'], fill=self.green_bright)
             
         # 2. Draw Temporary Target marker
         if self.temp_marker:
-            rx, ry = self.temp_marker['ratio_x'], self.temp_marker['ratio_y']
-            if self.mirror_horizontal:
-                rx = 1.0 - rx
-            if self.mirror_vertical:
-                ry = 1.0 - ry
-                
-            tx = int(rx * new_w) - int(src_left_int * total_scale)
-            ty = int(ry * new_h) - int(src_top_int * total_scale)
+            px = self.temp_marker['ratio_x'] * w_orig
+            py = self.temp_marker['ratio_y'] * h_orig
+            tx, ty = map_coords(px, py)
             
             if 0 <= tx < crop_new_w and 0 <= ty < crop_new_h:
                 if self.temp_marker.get('type') == 'gaia_query':
@@ -1791,14 +1838,9 @@ class FitsManagerApp:
                     draw.text((tx + 15, ty - 8), "Gaia Query Target", fill=self.green_bright)
                     
                     if self.temp_marker.get('catalog_ratio_x') is not None:
-                        cx_r = self.temp_marker['catalog_ratio_x']
-                        cy_r = self.temp_marker['catalog_ratio_y']
-                        if self.mirror_horizontal:
-                            cx_r = 1.0 - cx_r
-                        if self.mirror_vertical:
-                            cy_r = 1.0 - cy_r
-                        cx_c = int(cx_r * new_w) - int(src_left_int * total_scale)
-                        cy_c = int(cy_r * new_h) - int(src_top_int * total_scale)
+                        cx_px = self.temp_marker['catalog_ratio_x'] * w_orig
+                        cy_px = self.temp_marker['catalog_ratio_y'] * h_orig
+                        cx_c, cy_c = map_coords(cx_px, cy_px)
                         
                         if 0 <= cx_c < crop_new_w and 0 <= cy_c < crop_new_h:
                             size = 6
@@ -1811,7 +1853,6 @@ class FitsManagerApp:
             
         # 3. Draw Catalog Stars Overlay (cyan circles)
         if self.show_catalog_stars.get() and self.catalog_stars and self.wcs:
-            h_orig, w_orig = self.debayered_cache.shape[:2]
             header_epoch = self.fits_header.get('EQUINOX', 2000.0)
             for star in self.catalog_stars:
                 try:
@@ -1824,21 +1865,14 @@ class FitsManagerApp:
                         
                     px_x, px_y = self.wcs.world_to_pixel(target_wcs_coord)
                     if 0 <= px_x < w_orig and 0 <= px_y < h_orig:
-                        rx = px_x / w_orig
-                        ry = px_y / h_orig
-                        if self.mirror_horizontal:
-                            rx = 1.0 - rx
-                        if self.mirror_vertical:
-                            ry = 1.0 - ry
-                        sx = int(rx * new_w) - int(src_left_int * total_scale)
-                        sy = int(ry * new_h) - int(src_top_int * total_scale)
+                        sx, sy = map_coords(px_x, px_y)
                         
                         if 0 <= sx < crop_new_w and 0 <= sy < crop_new_h:
                             r_star = 8
                             if star.get('is_variable'):
-                                # Red outline for variable stars, label with "V:"
+                                # Red outline for variable stars, label with V and rounded mag (no decimals)
                                 draw.ellipse([sx - r_star, sy - r_star, sx + r_star, sy + r_star], outline="#ef4444", width=1)
-                                draw.text((sx + 10, sy - 8), f"V:{star['mag']:.2f}", fill="#ef4444")
+                                draw.text((sx + 10, sy - 8), f"V{int(round(star['mag']))}", fill="#ef4444")
                             else:
                                 # Electric blue outline for catalog stars
                                 draw.ellipse([sx - r_star, sy - r_star, sx + r_star, sy + r_star], outline="#2979ff", width=1)
@@ -1848,40 +1882,23 @@ class FitsManagerApp:
                     
         # 4. Draw Selected Calibration Stars (green circles)
         if self.show_catalog_stars.get() and self.calib_stars:
-            h_orig, w_orig = self.debayered_cache.shape[:2]
             for star in self.calib_stars:
-                rx = star['x'] / w_orig
-                ry = star['y'] / h_orig
-                if self.mirror_horizontal:
-                    rx = 1.0 - rx
-                if self.mirror_vertical:
-                    ry = 1.0 - ry
-                sx = int(rx * new_w) - int(src_left_int * total_scale)
-                sy = int(ry * new_h) - int(src_top_int * total_scale)
+                sx, sy = map_coords(star['x'], star['y'])
                 
                 if 0 <= sx < crop_new_w and 0 <= sy < crop_new_h:
                     r_star = 12
-                    # Thicker green circle for calibrated stars
+                    # Thicker green circle for calibrated stars (no text label)
                     draw.ellipse([sx - r_star, sy - r_star, sx + r_star, sy + r_star], outline="#22c55e", width=2)
-                    draw.text((sx + 14, sy - 8), "CALIB", fill="#22c55e")
                     
         # 5. Draw MPC Asteroids Overlay (orange diamonds)
         if self.show_asteroids.get() and getattr(self, 'asteroid_objects', None) and self.wcs:
-            h_orig, w_orig = self.debayered_cache.shape[:2]
             for ast in self.asteroid_objects:
                 try:
                     # Parse RA/Dec HMS/DMS
                     input_coord = SkyCoord(ast['ra_hms'], ast['dec_dms'], unit=(u.hourangle, u.deg))
                     px_x, px_y = self.wcs.world_to_pixel(input_coord)
                     if 0 <= px_x < w_orig and 0 <= px_y < h_orig:
-                        rx = px_x / w_orig
-                        ry = px_y / h_orig
-                        if self.mirror_horizontal:
-                            rx = 1.0 - rx
-                        if self.mirror_vertical:
-                            ry = 1.0 - ry
-                        ax = int(rx * new_w) - int(src_left_int * total_scale)
-                        ay = int(ry * new_h) - int(src_top_int * total_scale)
+                        ax, ay = map_coords(px_x, px_y)
                         
                         if 0 <= ax < crop_new_w and 0 <= ay < crop_new_h:
                             r_ast = 6
@@ -1907,15 +1924,15 @@ class FitsManagerApp:
         
         # Manually compute scrollbar fraction views
         if new_w > canvas_w:
-            left_frac = max(0.0, min(1.0, -self.pan_x / new_w))
-            right_frac = max(0.0, min(1.0, (canvas_w - self.pan_x) / new_w))
+            left_frac = max(0.0, min(1.0, ((new_w - canvas_w) / 2.0 - self.pan_x) / new_w))
+            right_frac = max(0.0, min(1.0, ((new_w + canvas_w) / 2.0 - self.pan_x) / new_w))
             self.hbar.set(left_frac, right_frac)
         else:
             self.hbar.set(0.0, 1.0)
             
         if new_h > canvas_h:
-            top_frac = max(0.0, min(1.0, -self.pan_y / new_h))
-            bottom_frac = max(0.0, min(1.0, (canvas_h - self.pan_y) / new_h))
+            top_frac = max(0.0, min(1.0, ((new_h - canvas_h) / 2.0 - self.pan_y) / new_h))
+            bottom_frac = max(0.0, min(1.0, ((new_h + canvas_h) / 2.0 - self.pan_y) / new_h))
             self.vbar.set(top_frac, bottom_frac)
         else:
             self.vbar.set(0.0, 1.0)
@@ -1976,12 +1993,18 @@ class FitsManagerApp:
         self.crop_mode = not self.crop_mode
         if self.crop_mode:
             self.annotation_mode = False
+            self.calibration_mode = False
+            self.measurement_mode = False
             self.balance_mode = "None"
+            self.gaia_search_mode = False
+            self.gaia_search_var.set(False)
             if self.btn_bal_sky:
                 self.btn_bal_sky.config(bg="#374151")
             if self.btn_bal_star:
                 self.btn_bal_star.config(bg="#374151")
             self.btn_annotate.config(text="Annotate Mode: Off", bg="#374151")
+            self.btn_calibration.config(text="Mark Calib Stars: Off", bg="#374151")
+            self.btn_measurement.config(text="Measure Target: Off", bg="#374151")
             self.btn_crop.config(text="Crop Mode: ON", bg="#e11d48")
             self.canvas.config(cursor="cross")
         else:
@@ -1995,12 +2018,18 @@ class FitsManagerApp:
         self.annotation_mode = not self.annotation_mode
         if self.annotation_mode:
             self.crop_mode = False
+            self.calibration_mode = False
+            self.measurement_mode = False
             self.balance_mode = "None"
+            self.gaia_search_mode = False
+            self.gaia_search_var.set(False)
             if self.btn_bal_sky:
                 self.btn_bal_sky.config(bg="#374151")
             if self.btn_bal_star:
                 self.btn_bal_star.config(bg="#374151")
             self.btn_crop.config(text="Crop Mode: Off", bg="#374151")
+            self.btn_calibration.config(text="Mark Calib Stars: Off", bg="#374151")
+            self.btn_measurement.config(text="Measure Target: Off", bg="#374151")
             self.btn_annotate.config(text="Annotate Mode: ON", bg="#10b981")
             self.canvas.config(cursor="tcross")
         else:
@@ -2019,67 +2048,65 @@ class FitsManagerApp:
             return
             
         h, w = img_to_draw.shape[:2]
+        h_orig, w_orig = self.debayered_cache.shape[:2]
         
+        px_x = int(canvas_x / self.img_scale_ratio) + self.src_left_int
+        px_y = int(canvas_y / self.img_scale_ratio) + self.src_top_int
+        
+        # Adjust coordinate mapping if visual crop is active
+        if self.visual_crop_box is not None:
+            start_x, start_y, end_x, end_y = self.visual_crop_box
+            px_x += start_x
+            px_y += start_y
+            
         # Gaia Star Query Mode Click Logic
         if getattr(self, 'gaia_search_mode', False):
-            h_orig, w_orig = self.debayered_cache.shape[:2]
-            px_x = int(canvas_x / self.img_scale_ratio) + self.src_left_int
-            px_y = int(canvas_y / self.img_scale_ratio) + self.src_top_int
-            
             if 0 <= px_x < w_orig and 0 <= px_y < h_orig:
+                corr_x, corr_y = px_x, px_y
                 if self.mirror_horizontal:
-                    px_x = (w_orig - 1) - px_x
+                    corr_x = (w_orig - 1) - corr_x
                 if self.mirror_vertical:
-                    px_y = (h_orig - 1) - px_y
+                    corr_y = (h_orig - 1) - corr_y
                     
-                self.handle_gaia_search_click(px_x, px_y)
+                self.handle_gaia_search_click(corr_x, corr_y)
                 return
                 
         # Calibration Mode Click Logic
         if getattr(self, 'calibration_mode', False):
-            h_orig, w_orig = self.debayered_cache.shape[:2]
-            px_x = int(canvas_x / self.img_scale_ratio) + self.src_left_int
-            px_y = int(canvas_y / self.img_scale_ratio) + self.src_top_int
-            
             if 0 <= px_x < w_orig and 0 <= px_y < h_orig:
+                corr_x, corr_y = px_x, px_y
                 if self.mirror_horizontal:
-                    px_x = (w_orig - 1) - px_x
+                    corr_x = (w_orig - 1) - corr_x
                 if self.mirror_vertical:
-                    px_y = (h_orig - 1) - px_y
+                    corr_y = (h_orig - 1) - corr_y
                     
-                self.handle_calibration_click(px_x, px_y)
+                self.handle_calibration_click(corr_x, corr_y)
                 return
                 
         # Measurement Mode Click Logic
         if getattr(self, 'measurement_mode', False):
-            h_orig, w_orig = self.debayered_cache.shape[:2]
-            px_x = int(canvas_x / self.img_scale_ratio) + self.src_left_int
-            px_y = int(canvas_y / self.img_scale_ratio) + self.src_top_int
-            
             if 0 <= px_x < w_orig and 0 <= px_y < h_orig:
+                corr_x, corr_y = px_x, px_y
                 if self.mirror_horizontal:
-                    px_x = (w_orig - 1) - px_x
+                    corr_x = (w_orig - 1) - corr_x
                 if self.mirror_vertical:
-                    px_y = (h_orig - 1) - px_y
+                    corr_y = (h_orig - 1) - corr_y
                     
-                self.handle_measurement_click(px_x, px_y)
+                self.handle_measurement_click(corr_x, corr_y)
                 return
             
         # Color Balance Sampler Point Click Logic
         if self.balance_mode != "None":
-            h_orig, w_orig = self.debayered_cache.shape[:2]
-            px_x = int(canvas_x / self.img_scale_ratio) + self.src_left_int
-            px_y = int(canvas_y / self.img_scale_ratio) + self.src_top_int
-            
             if 0 <= px_x < w_orig and 0 <= px_y < h_orig:
+                corr_x, corr_y = px_x, px_y
                 if self.mirror_horizontal:
-                    px_x = (w_orig - 1) - px_x
+                    corr_x = (w_orig - 1) - corr_x
                 if self.mirror_vertical:
-                    px_y = (h_orig - 1) - px_y
+                    corr_y = (h_orig - 1) - corr_y
                     
                 # Sample a larger 10x10 pixel patch
-                x_min, x_max = max(0, px_x - 5), min(w_orig, px_x + 5)
-                y_min, y_max = max(0, px_y - 5), min(h_orig, px_y + 5)
+                x_min, x_max = max(0, corr_x - 5), min(w_orig, corr_x + 5)
+                y_min, y_max = max(0, corr_y - 5), min(h_orig, corr_y + 5)
                 patch = self.debayered_cache[y_min:y_max, x_min:x_max] # shape (H, W, 3)
             
             global_min = self.debayered_cache.min()
@@ -2174,18 +2201,21 @@ class FitsManagerApp:
             if self.crop_mode:
                 self.crop_start = (event.x, event.y)
             elif self.annotation_mode:
-                ratio_x = canvas_x / (self.img_scale_ratio * w)
-                ratio_y = canvas_y / (self.img_scale_ratio * h)
-                
+                corr_x, corr_y = px_x, px_y
                 if self.mirror_horizontal:
-                    ratio_x = 1.0 - ratio_x
+                    corr_x = (w_orig - 1) - corr_x
                 if self.mirror_vertical:
-                    ratio_y = 1.0 - ratio_y
+                    corr_y = (h_orig - 1) - corr_y
+                    
+                # Calculate centroid of the star for perfect alignment
+                img_gray = 0.2126 * self.debayered_cache[:,:,0] + 0.7152 * self.debayered_cache[:,:,1] + 0.0722 * self.debayered_cache[:,:,2]
+                _, cx, cy = self.measure_aperture_flux(img_gray, corr_x, corr_y)
+                ratio_x = cx / w_orig
+                ratio_y = cy / h_orig
                 
                 initial_val = ""
                 if self.wcs:
                     try:
-                        h_orig, w_orig = self.fits_data.shape[-2:]
                         orig_px_x = int(ratio_x * w_orig)
                         orig_px_y = int(ratio_y * h_orig)
                         
@@ -2236,53 +2266,44 @@ class FitsManagerApp:
             img_x2 = min(int(w * self.img_scale_ratio), x2 - self.img_offset_x)
             img_y2 = min(int(h * self.img_scale_ratio), y2 - self.img_offset_y)
             
-            w_px1 = int(img_x1 / self.img_scale_ratio)
-            h_px1 = int(img_y1 / self.img_scale_ratio)
-            w_px2 = int(img_x2 / self.img_scale_ratio)
-            h_px2 = int(img_y2 / self.img_scale_ratio)
-            
-            h_orig, w_orig = self.fits_data.shape[-2:]
+            w_px1 = int(img_x1 / self.img_scale_ratio) + self.src_left_int
+            h_px1 = int(img_y1 / self.img_scale_ratio) + self.src_top_int
+            w_px2 = int(img_x2 / self.img_scale_ratio) + self.src_left_int
+            h_px2 = int(img_y2 / self.img_scale_ratio) + self.src_top_int
             
             if self.mirror_horizontal:
-                w_px1 = (w_orig - 1) - w_px1
-                w_px2 = (w_orig - 1) - w_px2
+                w_px1 = (w - 1) - w_px1
+                w_px2 = (w - 1) - w_px2
             if self.mirror_vertical:
-                h_px1 = (h_orig - 1) - h_px1
-                h_px2 = (h_orig - 1) - h_px2
+                h_px1 = (h - 1) - h_px1
+                h_px2 = (h - 1) - h_px2
                 
             start_x, end_x = min(w_px1, w_px2), max(w_px1, w_px2)
             start_y, end_y = min(h_px1, h_px2), max(h_px1, h_px2)
             
+            # Align crop coordinates to even boundaries if bayer pattern is active to preserve Bayer phase alignment
+            if self.bayer_pattern.get() != "None":
+                start_x = (start_x // 2) * 2
+                start_y = (start_y // 2) * 2
+                end_x = (end_x // 2) * 2
+                end_y = (end_y // 2) * 2
+                
+            # If already cropped, convert relative coordinates to absolute original image coordinates
+            if self.visual_crop_box is not None:
+                orig_start_x, orig_start_y, orig_end_x, orig_end_y = self.visual_crop_box
+                start_x += orig_start_x
+                start_y += orig_start_y
+                end_x += orig_start_x
+                end_y += orig_start_y
+                
             if (end_x - start_x) > 5 and (end_y - start_y) > 5:
                 self.push_state()
-                if self.fits_data.ndim == 3:
-                    self.fits_data = self.fits_data[:, start_y:end_y, start_x:end_x]
-                else:
-                    self.fits_data = self.fits_data[start_y:end_y, start_x:end_x]
-                    
-                # Slice and update WCS to match the cropped coordinate frame
-                if self.wcs is not None:
-                    try:
-                        self.wcs = self.wcs.slice((slice(start_y, end_y), slice(start_x, end_x)))
-                    except Exception as e:
-                        pass
-                        
-                self.debayered_cache = None
-                self.temp_marker = None
-                self.sky_sample_rgb = None
-                self.star_sample_rgb = None
+                self.visual_crop_box = (start_x, start_y, end_x, end_y)
                 
-                new_annotations = []
-                for ann in self.annotations:
-                    px = ann['x'] * w_orig
-                    py = ann['y'] * h_orig
-                    if start_x <= px < end_x and start_y <= py < end_y:
-                        new_annotations.append({
-                            'x': (px - start_x) / (end_x - start_x),
-                            'y': (py - start_y) / (end_y - start_y),
-                            'text': ann['text']
-                        })
-                self.annotations = new_annotations
+                # Reset zoom and panning values to fit the new cropped area perfectly on screen
+                self.zoom_level = 1.0
+                self.pan_x = 0.0
+                self.pan_y = 0.0
                 
                 self.toggle_crop_mode()
                 self.process_and_update(is_dragging=False)
@@ -2338,26 +2359,32 @@ class FitsManagerApp:
                     coord_jnow = input_coord
                     coord_j2000 = input_coord.transform_to(FK5(equinox='J2000'))
                 
-                self.temp_marker = {
-                    'ra': coord_j2000.ra.to_string(unit="hour", sep="hms", precision=2),
-                    'dec': coord_j2000.dec.to_string(unit="degree", sep="dms", precision=2),
-                    'ratio_x': px_x / w_orig,
-                    'ratio_y': px_y / h_orig
-                }
+                self.push_state()
+                # Find the centroid of the targeted star to center the target marker perfectly
+                img_gray = 0.2126 * self.debayered_cache[:,:,0] + 0.7152 * self.debayered_cache[:,:,1] + 0.0722 * self.debayered_cache[:,:,2]
+                _, cx, cy = self.measure_aperture_flux(img_gray, px_x, px_y)
+                
+                ra_str = coord_j2000.ra.to_string(unit="hour", sep="hms", precision=2)
+                dec_str = coord_j2000.dec.to_string(unit="degree", sep="dms", precision=2)
+                self.annotations.append({
+                    'x': cx / w_orig,
+                    'y': cy / h_orig,
+                    'text': f"Target RA:{ra_str} DEC:{dec_str}"
+                })
                 
                 canvas_w = self.canvas.winfo_width()
                 canvas_h = self.canvas.winfo_height()
                 fit_ratio = min(canvas_w / w_orig, canvas_h / h_orig)
                 total_scale = fit_ratio * self.zoom_level
                 
-                target_draw_x = (w_orig - 1 - px_x) if self.mirror_horizontal else px_x
-                target_draw_y = (h_orig - 1 - px_y) if self.mirror_vertical else px_y
+                target_draw_x = (w_orig - 1 - cx) if self.mirror_horizontal else cx
+                target_draw_y = (h_orig - 1 - cy) if self.mirror_vertical else cy
                 
                 self.pan_x = (canvas_w / 2) - (target_draw_x * total_scale) - ((canvas_w - (w_orig * total_scale)) / 2)
                 self.pan_y = (canvas_h / 2) - (target_draw_y * total_scale) - ((canvas_h - (h_orig * total_scale)) / 2)
                 
                 self.render_canvas(is_dragging=False)
-                messagebox.showinfo("Target Marked", f"Star marked at pixels X={px_x}, Y={px_y}.\nCentering viewport.")
+                messagebox.showinfo("Target Marked", f"Star marked at pixels X={cx:.1f}, Y={cy:.1f}.\nCentering viewport.")
             else:
                 messagebox.showerror("Out of bounds", f"The coordinates resolved to pixel (X={px_x}, Y={px_y}) which is out of image bounds.")
                 
@@ -2388,9 +2415,14 @@ class FitsManagerApp:
             
             h, w = self.processed_img_full.shape[:2]
             
-            # Load a high-res TTF font if possible, fallback to default scaled
-            font_size = int(max(w, h) * 0.015)
-            font_size = max(24, min(font_size, 96))
+            # Determine size of crosshair based on image dimensions
+            cross_size = int(max(w, h) * 0.015)
+            cross_size = max(24, min(cross_size, 96))
+            cross_width = max(2, int(cross_size * 0.06))
+            
+            # Load a high-res TTF font if possible.
+            # Use a compact scale factor (exactly 45% of crosshair size) to match screen visual proportions
+            font_size = max(10, int(cross_size * 0.45))
             
             font = None
             try:
@@ -2405,9 +2437,19 @@ class FitsManagerApp:
             except Exception:
                 pass
                 
-            # 1. Draw Saved Annotations
-            for ann in self.annotations:
-                rx, ry = ann['x'], ann['y']
+            # Coordinate mapping helper for export_image
+            h_orig, w_orig = self.debayered_cache.shape[:2]
+            
+            def map_coords_export(px_x, px_y):
+                x_val = px_x
+                y_val = px_y
+                if self.visual_crop_box is not None:
+                    start_x, start_y, end_x, end_y = self.visual_crop_box
+                    x_val = x_val - start_x
+                    y_val = y_val - start_y
+                    
+                rx = x_val / w
+                ry = y_val / h
                 if self.mirror_horizontal:
                     rx = 1.0 - rx
                 if self.mirror_vertical:
@@ -2415,53 +2457,53 @@ class FitsManagerApp:
                     
                 ax = int(rx * w)
                 ay = int(ry * h)
+                return ax, ay
                 
-                cross_size = int(max(w, h) * 0.025)
-                cross_size = max(40, min(cross_size, 160))
-                
-                # Draw thick lines for full resolution exports (width=5)
-                self.draw_star_crosshair(draw, ax, ay, size=cross_size, width=5)
-                
-                text_offset_x = int(cross_size * 0.8)
-                text_offset_y = int(cross_size * 0.8)
-                
-                # Draw thick readable text
-                if font:
-                    draw.text((ax + text_offset_x, ay + text_offset_y), ann['text'], fill=self.green_bright, font=font)
-                else:
-                    # Fallback thick text simulation using offset shadow if font is None
-                    for dx in range(-1, 2):
-                        for dy in range(-1, 2):
-                            draw.text((ax + text_offset_x + dx, ay + text_offset_y + dy), ann['text'], fill=self.green_bright)
-                
+            # 1. Draw Saved Annotations (if enabled)
+            if self.show_annotations.get():
+                for ann in self.annotations:
+                    px = ann['x'] * w_orig
+                    py = ann['y'] * h_orig
+                    ax, ay = map_coords_export(px, py)
+                    
+                    if 0 <= ax < w and 0 <= ay < h:
+                        self.draw_star_crosshair(draw, ax, ay, size=cross_size, width=cross_width)
+                        
+                        text_offset_x = int(cross_size * 0.6)
+                        text_offset_y = int(cross_size * 0.6)
+                        
+                        # Draw thick readable text
+                        if font:
+                            draw.text((ax + text_offset_x, ay + text_offset_y), ann['text'], fill=self.green_bright, font=font)
+                        else:
+                            # Fallback thick text simulation using offset shadow if font is None
+                            for dx in range(-1, 2):
+                                for dy in range(-1, 2):
+                                    draw.text((ax + text_offset_x + dx, ay + text_offset_y + dy), ann['text'], fill=self.green_bright)
+                    
             # 2. Draw Temporary Target marker if present
             if self.temp_marker:
-                rx, ry = self.temp_marker['ratio_x'], self.temp_marker['ratio_y']
-                if self.mirror_horizontal:
-                    rx = 1.0 - rx
-                if self.mirror_vertical:
-                    ry = 1.0 - ry
+                px = self.temp_marker['ratio_x'] * w_orig
+                py = self.temp_marker['ratio_y'] * h_orig
+                tx, ty = map_coords_export(px, py)
+                
+                if 0 <= tx < w and 0 <= ty < h:
+                    temp_cross_size = int(cross_size * 1.2)
+                    temp_cross_width = max(2, int(temp_cross_size * 0.06))
+                    self.draw_star_crosshair(draw, tx, ty, size=temp_cross_size, width=temp_cross_width)
                     
-                tx = int(rx * w)
-                ty = int(ry * h)
-                
-                cross_size = int(max(w, h) * 0.03)
-                cross_size = max(50, min(cross_size, 200))
-                
-                self.draw_star_crosshair(draw, tx, ty, size=cross_size, width=6)
-                
-                text_offset_x = int(cross_size * 0.8)
-                text_offset_y = int(cross_size * 0.8)
-                
-                text_content = f"Target: RA={self.temp_marker['ra']}\nDEC={self.temp_marker['dec']}"
-                
-                if font:
-                    draw.text((tx + text_offset_x, ty + text_offset_y), text_content, fill=self.green_bright, font=font)
-                else:
-                    for dx in range(-1, 2):
-                        for dy in range(-1, 2):
-                            draw.text((tx + text_offset_x + dx, ty + text_offset_y + dy), text_content, fill=self.green_bright)
-                
+                    text_offset_x = int(temp_cross_size * 0.6)
+                    text_offset_y = int(temp_cross_size * 0.6)
+                    
+                    text_content = f"Target: RA={self.temp_marker['ra']}\nDEC={self.temp_marker['dec']}"
+                    
+                    if font:
+                        draw.text((tx + text_offset_x, ty + text_offset_y), text_content, fill=self.green_bright, font=font)
+                    else:
+                        for dx in range(-1, 2):
+                            for dy in range(-1, 2):
+                                draw.text((tx + text_offset_x + dx, ty + text_offset_y + dy), text_content, fill=self.green_bright)
+                    
             pil_export.save(file_path)
             messagebox.showinfo("Success", f"Image exported successfully to:\n{file_path}")
         except Exception as e:
@@ -2926,6 +2968,20 @@ class FitsManagerApp:
         py_val = float(np.atleast_1d(py)[0])
         iy, ix = int(round(py_val)), int(round(px_val))
         h, w = data.shape
+        
+        # 1. Local maximum search to locate the peak of luminosity in a 15x15 area
+        search_r = 7
+        y_min_s, y_max_s = max(0, iy - search_r), min(h, iy + search_r + 1)
+        x_min_s, x_max_s = max(0, ix - search_r), min(w, ix + search_r + 1)
+        search_patch = data[y_min_s:y_max_s, x_min_s:x_max_s]
+        
+        if search_patch.size > 0:
+            min_val, max_val, min_loc, max_loc = cv2.minMaxLoc(search_patch)
+            peak_x = x_min_s + max_loc[0]
+            peak_y = y_min_s + max_loc[1]
+            iy, ix = int(round(peak_y)), int(round(peak_x))
+            
+        # 2. Fine centroiding on a smaller box around the peak
         y_min, y_max = max(0, iy - box_radius), min(h, iy + box_radius + 1)
         x_min, x_max = max(0, ix - box_radius), min(w, ix + box_radius + 1)
         patch = data[y_min:y_max, x_min:x_max]
@@ -2935,7 +2991,7 @@ class FitsManagerApp:
             cx = (patch * xx).sum() / total_val
             cy = (patch * yy).sum() / total_val
             return float(cx), float(cy)
-        return float(px), float(py)
+        return float(ix), float(iy)
 
     def measure_aperture_flux(self, data, px, py, r_ap=6, r_in=10, r_out=15):
         centroid_x, centroid_y = self.find_centroid(data, px, py, box_radius=4)
@@ -3574,17 +3630,60 @@ class FitsManagerApp:
         init_ra = ""
         init_dec = ""
         
-        # Prefill RA/Dec from header
-        ra_val = self.fits_header.get('RA', self.fits_header.get('OBJCTRA', ''))
-        dec_val = self.fits_header.get('DEC', self.fits_header.get('OBJCTDEC', ''))
-        if ra_val != "":
-            init_ra = str(ra_val)
-        if dec_val != "":
-            init_dec = str(dec_val)
+        # Calculate WCS sky coordinates at the center of the currently viewed viewport
+        if self.debayered_cache is not None:
+            try:
+                h_orig, w_orig = self.debayered_cache.shape[:2]
+                cx_px = w_orig / 2.0
+                cy_px = h_orig / 2.0
+                
+                # If we have a computed visible viewport, find its center
+                if hasattr(self, 'src_left_int') and hasattr(self, 'src_top_int'):
+                    w_view = getattr(self, 'src_right_int', w_orig) - self.src_left_int
+                    h_view = getattr(self, 'src_bottom_int', h_orig) - self.src_top_int
+                    cx_px = self.src_left_int + w_view / 2.0
+                    cy_px = self.src_top_int + h_view / 2.0
+                    
+                # Add visual crop offsets if set
+                if getattr(self, 'visual_crop_box', None) is not None:
+                    start_x, start_y, end_x, end_y = self.visual_crop_box
+                    cx_px += start_x
+                    cy_px += start_y
+                    
+                if self.wcs is not None:
+                    center_sky = self.wcs.pixel_to_world(cx_px, cy_px)
+                    init_ra = f"{center_sky.ra.deg:.6f}"
+                    init_dec = f"{center_sky.dec.deg:.6f}"
+            except Exception:
+                pass
+                
+        if not init_ra:
+            # Prefill RA/Dec from header fallback
+            ra_val = self.fits_header.get('RA', self.fits_header.get('OBJCTRA', ''))
+            dec_val = self.fits_header.get('DEC', self.fits_header.get('OBJCTDEC', ''))
+            if ra_val != "":
+                init_ra = str(ra_val)
+            if dec_val != "":
+                init_dec = str(dec_val)
             
         init_focal = str(self.fits_header.get('FOCALLEN', ''))
         init_pixel = str(self.fits_header.get('XPIXSZ', self.fits_header.get('PIXSIZE', '')))
-        init_radius = "50" # Default 50 arcminutes
+        
+        # Calculate optimal search radius based on image dimensions and pixel scale
+        init_radius = "50"
+        try:
+            focal_val = float(init_focal)
+            pixel_val = float(init_pixel)
+            if focal_val > 0 and pixel_val > 0:
+                h_orig, w_orig = self.fits_data.shape[-2:]
+                pixel_scale_deg = (pixel_val / focal_val) * (206.265 / 3600.0)
+                diag_pixels = np.sqrt(w_orig**2 + h_orig**2)
+                diag_arcmin = diag_pixels * pixel_scale_deg * 60.0
+                # Optimal radius is half the diagonal plus a margin of 20%
+                opt_rad = (diag_arcmin / 2.0) * 1.2
+                init_radius = f"{opt_rad:.1f}"
+        except Exception:
+            pass
 
         dialog = tk.Toplevel(self.root)
         dialog.title("Plate Solve (Vizier/Astroalign)")
@@ -4498,6 +4597,156 @@ class FitsManagerApp:
         self.temp_marker = None
         self.render_canvas(is_dragging=False)
         messagebox.showinfo("Clear Target", "All annotations and target markers cleared.", parent=self.root)
+
+    def save_annotations_to_fits(self):
+        if not self.fits_path:
+            messagebox.showerror("Error", "No FITS file open.", parent=self.root)
+            return
+            
+        if not self.annotations:
+            messagebox.showwarning("Save Annotations", "No annotations to save.", parent=self.root)
+            return
+            
+        try:
+            from astropy.io import fits
+            import numpy as np
+            import re
+            from astropy.coordinates import FK5
+            
+            # Resolve image shape for WCS conversions
+            h_orig, w_orig = self.debayered_cache.shape[:2] if self.debayered_cache is not None else (1, 1)
+            
+            # Build arrays for columns
+            x_ratios = []
+            y_ratios = []
+            texts = []
+            ras = []
+            decs = []
+            mags = []
+            
+            # Strip null characters and pad strings with spaces manually to prevent trailing null byte issues in fits viewers
+            texts_raw = [ann['text'].strip() for ann in self.annotations]
+            max_len = max(1, max(len(t) for t in texts_raw))
+            
+            for ann in self.annotations:
+                x_r = float(ann['x'])
+                y_r = float(ann['y'])
+                x_ratios.append(x_r)
+                y_ratios.append(y_r)
+                texts.append(ann['text'].strip().ljust(max_len))
+                
+                # Resolve RA/DEC
+                ra_val = np.nan
+                dec_val = np.nan
+                if 'ra' in ann and ann['ra'] is not None:
+                    ra_val = float(ann['ra'])
+                    dec_val = float(ann['dec'])
+                elif self.wcs and h_orig > 1:
+                    try:
+                        px = int(round(x_r * w_orig))
+                        py = int(round(y_r * h_orig))
+                        sky_coord = self.wcs.pixel_to_world(px, py)
+                        j2000 = sky_coord.transform_to(FK5(equinox='J2000'))
+                        ra_val = float(j2000.ra.deg)
+                        dec_val = float(j2000.dec.deg)
+                    except Exception:
+                        pass
+                ras.append(ra_val)
+                decs.append(dec_val)
+                
+                # Resolve MAG
+                mag_val = np.nan
+                if 'mag' in ann and ann['mag'] is not None:
+                    mag_val = float(ann['mag'])
+                else:
+                    match = re.search(r'(?:Mag|V|mag)\s*=\s*([-+]?\d*\.\d+|\d+)', ann['text'])
+                    if match:
+                        try:
+                            mag_val = float(match.group(1))
+                        except ValueError:
+                            pass
+                mags.append(mag_val)
+                
+            # Create columns
+            col_x = fits.Column(name='X_RATIO', format='D', array=x_ratios)
+            col_y = fits.Column(name='Y_RATIO', format='D', array=y_ratios)
+            col_text = fits.Column(name='TEXT', format=f'{max_len}A', array=texts)
+            col_ra = fits.Column(name='RA', format='D', array=ras)
+            col_dec = fits.Column(name='DEC', format='D', array=decs)
+            col_mag = fits.Column(name='MAG', format='D', array=mags)
+            
+            tb_hdu = fits.BinTableHDU.from_columns([col_x, col_y, col_text, col_ra, col_dec, col_mag], name='ANNOTATIONS')
+            
+            with fits.open(self.fits_path, mode='update') as hdul:
+                if 'ANNOTATIONS' in hdul:
+                    del hdul['ANNOTATIONS']
+                hdul.append(tb_hdu)
+                hdul.flush()
+                
+            messagebox.showinfo("Success", f"Saved {len(self.annotations)} annotations with WCS coords and magnitudes to FITS table extension.", parent=self.root)
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to save annotations to FITS:\n{str(e)}", parent=self.root)
+
+    def import_annotations_from_fits(self):
+        if not self.fits_path:
+            messagebox.showerror("Error", "No FITS file open.", parent=self.root)
+            return
+            
+        try:
+            from astropy.io import fits
+            with fits.open(self.fits_path) as hdul:
+                if 'ANNOTATIONS' not in hdul:
+                    messagebox.showinfo("Import Annotations", "No annotations table extension found in this FITS file.", parent=self.root)
+                    return
+                
+                table = hdul['ANNOTATIONS'].data
+                imported = []
+                # Check for columns
+                col_names = table.columns.names
+                
+                for row in table:
+                    x_val = float(row['X_RATIO'])
+                    y_val = float(row['Y_RATIO'])
+                    
+                    text_val = row['TEXT']
+                    if isinstance(text_val, bytes):
+                        text_val = text_val.decode('utf-8', errors='ignore')
+                    text_val = str(text_val).strip()
+                    
+                    # Read optional columns
+                    ra_val = float(row['RA']) if 'RA' in col_names else None
+                    dec_val = float(row['DEC']) if 'DEC' in col_names else None
+                    mag_val = float(row['MAG']) if 'MAG' in col_names else None
+                    
+                    if ra_val is not None and np.isnan(ra_val): ra_val = None
+                    if dec_val is not None and np.isnan(dec_val): dec_val = None
+                    if mag_val is not None and np.isnan(mag_val): mag_val = None
+                    
+                    imported.append({
+                        'x': x_val,
+                        'y': y_val,
+                        'text': text_val,
+                        'ra': ra_val,
+                        'dec': dec_val,
+                        'mag': mag_val
+                    })
+                
+                if imported:
+                    self.push_state()
+                    existing_coords = {(ann['x'], ann['y']) for ann in self.annotations}
+                    added_count = 0
+                    for item in imported:
+                        if (item['x'], item['y']) not in existing_coords:
+                            self.annotations.append(item)
+                            added_count += 1
+                            
+                    self.render_canvas(is_dragging=False)
+                    messagebox.showinfo("Import Success", f"Imported {added_count} new annotations (total annotations: {len(self.annotations)}).", parent=self.root)
+                else:
+                    messagebox.showinfo("Import Annotations", "No annotations records found in the FITS extension table.", parent=self.root)
+                    
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to import annotations:\n{str(e)}", parent=self.root)
 
     def toggle_gaia_search_mode(self):
         self.gaia_search_mode = not getattr(self, 'gaia_search_mode', False)
