@@ -582,6 +582,8 @@ class FitsManagerApp:
         self.show_limiting_mag_stars = tk.BooleanVar(value=True)
         self.visual_crop_box = None
         self.calib_stars = []
+        self.show_transients = tk.BooleanVar(value=True)
+        self.transient_objects = []
         
         # Cleanup caches at startup if files count exceeds 300 per directory
         self.cleanup_caches_startup()
@@ -688,6 +690,10 @@ class FitsManagerApp:
         astrom_menu.add_command(label="Estimate Limiting Magnitude", command=self.estimate_limiting_magnitude)
         astrom_menu.add_checkbutton(label="Show Magnitude Limit Stars", variable=self.show_limiting_mag_stars, command=lambda: self.render_canvas(is_dragging=False))
         astrom_menu.add_command(label="Clear Calibration Stars", command=self.clear_calibration_stars)
+        astrom_menu.add_separator()
+        astrom_menu.add_command(label="Query TNS/Supernova/Nova", command=self.query_tns_transients)
+        astrom_menu.add_checkbutton(label="Show Supernova/nova", variable=self.show_transients, command=lambda: self.render_canvas(is_dragging=False))
+        astrom_menu.add_command(label="Configure TNS Credentials...", command=self.configure_tns_credentials)
         self.menu_bar.add_cascade(label="Astrometry", menu=astrom_menu)
 
         # 2. Create Top Toolbar (Single row)
@@ -1092,6 +1098,8 @@ class FitsManagerApp:
             self.show_catalog_stars.set(False)
             self.asteroid_objects = []
             self.show_asteroids.set(True)
+            self.transient_objects = []
+            self.show_transients.set(True)
             self.loaded_dss_tiles = []
             self.dss_blend_ratio.set(0.0)
             
@@ -2099,6 +2107,27 @@ class FitsManagerApp:
                             ]
                             draw.polygon(pts, outline="#f97316", width=2)
                             draw.text((ax + 10, ay - 8), f"{ast['name']} ({ast['mag']:.1f})", fill="#f97316")
+                except Exception:
+                    continue
+                    
+        # 6. Draw TNS Transients Overlay (colored squares)
+        if self.show_transients.get() and getattr(self, 'transient_objects', None) and self.wcs:
+            for trans in self.transient_objects:
+                try:
+                    input_coord = SkyCoord(trans['ra'], trans['dec'], unit=(u.deg, u.deg), frame='icrs')
+                    px_x, px_y = self.wcs.world_to_pixel(input_coord)
+                    if 0 <= px_x < w_orig and 0 <= px_y < h_orig:
+                        ax, ay = map_coords(px_x, px_y)
+                        if 0 <= ax < crop_new_w and 0 <= ay < crop_new_h:
+                            r_trans = 8
+                            color = trans.get('color', '#a855f7')
+                            draw.rectangle([ax - r_trans, ay - r_trans, ax + r_trans, ay + r_trans], outline=color, width=2)
+                            
+                            # Name, Discovery date, Magnitude
+                            disc_date = trans['discovery_date'].split()[0]
+                            t_type = trans['type'] if trans['type'] else "Unclassified"
+                            label_text = f"{trans['name']} ({t_type})\nMag: {trans['mag']}\nDisc: {disc_date}"
+                            draw.text((ax + 12, ay - 12), label_text, fill=color)
                 except Exception:
                     continue
                 
@@ -6132,6 +6161,253 @@ class FitsManagerApp:
                             pass
             except Exception:
                 pass
+
+    def configure_tns_credentials(self):
+        import tkinter.simpledialog as sd
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Configure TNS API Credentials")
+        dialog.geometry("450x260")
+        dialog.configure(bg=self.panel_color)
+        dialog.transient(self.root)
+        dialog.grab_set()
+        
+        lbl_title = tk.Label(dialog, text="Transient Name Server API Credentials", bg=self.panel_color, fg=self.text_color, font=("Segoe UI", 11, "bold"))
+        lbl_title.pack(pady=10)
+        
+        grid_frame = tk.Frame(dialog, bg=self.panel_color)
+        grid_frame.pack(padx=20, pady=10, fill="x")
+        
+        # Bot API Key
+        lbl_key = tk.Label(grid_frame, text="Bot API Key:", bg=self.panel_color, fg=self.text_color, font=("Segoe UI", 9, "bold"), anchor="w")
+        lbl_key.grid(row=0, column=0, sticky="ew", pady=5)
+        ent_key = tk.Entry(grid_frame, bg=self.bg_color, fg=self.text_color, insertbackground="white", bd=0, highlightthickness=1, highlightbackground=self.control_bg)
+        ent_key.insert(0, self.settings.get("tns_api_key", ""))
+        ent_key.grid(row=0, column=1, sticky="ew", pady=5, padx=10)
+        
+        # Bot ID
+        lbl_id = tk.Label(grid_frame, text="Bot ID:", bg=self.panel_color, fg=self.text_color, font=("Segoe UI", 9, "bold"), anchor="w")
+        lbl_id.grid(row=1, column=0, sticky="ew", pady=5)
+        ent_id = tk.Entry(grid_frame, bg=self.bg_color, fg=self.text_color, insertbackground="white", bd=0, highlightthickness=1, highlightbackground=self.control_bg)
+        ent_id.insert(0, self.settings.get("tns_bot_id", ""))
+        ent_id.grid(row=1, column=1, sticky="ew", pady=5, padx=10)
+        
+        # Bot Name
+        lbl_name = tk.Label(grid_frame, text="Bot Name:", bg=self.panel_color, fg=self.text_color, font=("Segoe UI", 9, "bold"), anchor="w")
+        lbl_name.grid(row=2, column=0, sticky="ew", pady=5)
+        ent_name = tk.Entry(grid_frame, bg=self.bg_color, fg=self.text_color, insertbackground="white", bd=0, highlightthickness=1, highlightbackground=self.control_bg)
+        ent_name.insert(0, self.settings.get("tns_bot_name", ""))
+        ent_name.grid(row=2, column=1, sticky="ew", pady=5, padx=10)
+        
+        grid_frame.columnconfigure(1, weight=1)
+        
+        def on_save():
+            self.settings["tns_api_key"] = ent_key.get().strip()
+            self.settings["tns_bot_id"] = ent_id.get().strip()
+            self.settings["tns_bot_name"] = ent_name.get().strip()
+            self.save_settings()
+            messagebox.showinfo("Success", "TNS credentials saved successfully!", parent=dialog)
+            dialog.destroy()
+            
+        btn_frame = tk.Frame(dialog, bg=self.panel_color)
+        btn_frame.pack(pady=15, fill="x")
+        
+        btn_save = tk.Button(btn_frame, text="Save Credentials", command=on_save, bg="#10b981", fg="white", font=("Segoe UI", 9, "bold"), bd=0, padx=15, pady=5)
+        btn_save.pack(side="right", padx=20)
+        btn_cancel = tk.Button(btn_frame, text="Cancel", command=dialog.destroy, bg="#374151", fg="white", font=("Segoe UI", 9, "bold"), bd=0, padx=15, pady=5)
+        btn_cancel.pack(side="right", padx=10)
+
+    def query_tns_transients(self):
+        if self.fits_data is None:
+            messagebox.showerror("Error", "Load an image first.", parent=self.root)
+            return
+        if not self.wcs:
+            messagebox.showerror("Error", "WCS solution is required. Please plate-solve the image first.", parent=self.root)
+            return
+            
+        api_key = self.settings.get("tns_api_key", "").strip()
+        bot_id = self.settings.get("tns_bot_id", "").strip()
+        bot_name = self.settings.get("tns_bot_name", "").strip()
+        
+        if not api_key or not bot_id or not bot_name:
+            ans = messagebox.askyesno(
+                "TNS Credentials Missing",
+                "Transient Name Server (TNS) queries require Bot API credentials.\n"
+                "Would you like to configure your TNS Bot credentials now?",
+                parent=self.root
+            )
+            if ans:
+                self.configure_tns_credentials()
+            return
+            
+        # Open Observation Time Dialog
+        default_time_str = ""
+        if 'DATE-OBS' in self.fits_header:
+            default_time_str = str(self.fits_header['DATE-OBS'])
+        elif getattr(self, 'observation_time', None) is not None:
+            default_time_str = self.observation_time.isot
+        else:
+            from astropy.time import Time
+            default_time_str = Time.now().isot
+            
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Observation Time")
+        dialog.geometry("380x180")
+        dialog.configure(bg=self.panel_color)
+        dialog.transient(self.root)
+        dialog.grab_set()
+        
+        lbl_info = tk.Label(dialog, text="Verify Observation Time (UTC ISO format):\nYYYY-MM-DDTHH:MM:SS", bg=self.panel_color, fg=self.text_color, font=("Segoe UI", 9, "bold"))
+        lbl_info.pack(pady=15)
+        
+        ent_time = tk.Entry(dialog, bg=self.bg_color, fg=self.text_color, insertbackground="white", bd=0, highlightthickness=1, highlightbackground=self.control_bg, width=30)
+        ent_time.insert(0, default_time_str)
+        ent_time.pack(pady=5)
+        
+        def on_confirm():
+            time_str = ent_time.get().strip()
+            try:
+                from astropy.time import Time
+                self.observation_time = Time(time_str, format='isot')
+                self.fits_header['DATE-OBS'] = self.observation_time.isot
+                dialog.destroy()
+                self.execute_tns_query(api_key, bot_id, bot_name)
+            except Exception as ex:
+                messagebox.showerror("Error", f"Invalid observation date format:\n{ex}", parent=dialog)
+                
+        btn_confirm = tk.Button(dialog, text="Confirm & Search", command=on_confirm, bg="#10b981", fg="white", font=("Segoe UI", 9, "bold"), bd=0, padx=15, pady=5)
+        btn_confirm.pack(pady=10)
+
+    def execute_tns_query(self, api_key, bot_id, bot_name):
+        from astropy.coordinates import SkyCoord
+        import astropy.units as u
+        from astropy.time import Time
+        import datetime
+        import urllib.request
+        import urllib.parse
+        import ssl
+        import json
+        import io
+        
+        self.root.config(cursor="watch")
+        self.root.update()
+        
+        try:
+            h_orig, w_orig = self.debayered_cache.shape[:2]
+            center_coord = self.wcs.pixel_to_world(w_orig / 2.0, h_orig / 2.0)
+            
+            corner_coord = self.wcs.pixel_to_world(0, 0)
+            radius_deg = center_coord.separation(corner_coord).deg
+            radius_arcmin = radius_deg * 60.0
+            radius_arcmin = np.clip(radius_arcmin, 3.0, 60.0)
+            
+            coord_sky = SkyCoord(ra=center_coord.ra.deg*u.deg, dec=center_coord.dec.deg*u.deg, frame='icrs')
+            ra_hms = coord_sky.ra.to_string(unit=u.hour, sep=":", precision=2)
+            dec_dms = coord_sky.dec.to_string(unit=u.degree, sep=":", precision=2, alwayssign=True)
+            
+            obs_time = self.observation_time
+            start_date = obs_time - datetime.timedelta(days=365)
+            
+            tns_data = {
+                "ra": ra_hms,
+                "dec": dec_dms,
+                "radius": f"{radius_arcmin:.2f}",
+                "units": "arcmin"
+            }
+            
+            payload = {
+                "api_key": api_key,
+                "data": json.dumps(tns_data)
+            }
+            
+            post_data = urllib.parse.urlencode(payload).encode('utf-8')
+            
+            tns_marker = {
+                "tns_id": int(bot_id),
+                "type": "bot",
+                "name": bot_name
+            }
+            headers = {
+                "User-Agent": f"tns_marker{json.dumps(tns_marker)}",
+                "Content-Type": "application/x-www-form-urlencoded"
+            }
+            
+            url = "https://www.wis-tns.org/api/get/search"
+            req = urllib.request.Request(url, data=post_data, headers=headers)
+            
+            ssl_context = ssl._create_unverified_context()
+            with urllib.request.urlopen(req, timeout=30, context=ssl_context) as response:
+                resp_data = json.loads(response.read().decode('utf-8'))
+                
+            status_code = resp_data.get("status_code")
+            if str(status_code) != "200":
+                err_msg = resp_data.get("id_message", "Unknown TNS API error.")
+                raise Exception(f"TNS API returned error status {status_code}: {err_msg}")
+                
+            results = resp_data.get("data", {}).get("results", [])
+            
+            self.transient_objects = []
+            before_count = 0
+            after_count = 0
+            
+            for res in results:
+                objname = res.get("objname")
+                t_ra_str = res.get("ra")
+                t_dec_str = res.get("dec")
+                disc_date_str = res.get("discoverydate")
+                disc_mag = res.get("discoverymag")
+                objtype = res.get("objtype")
+                
+                if not objname or not t_ra_str or not t_dec_str or not disc_date_str:
+                    continue
+                    
+                try:
+                    t_coord = SkyCoord(ra=t_ra_str, dec=t_dec_str, unit=(u.hourangle, u.deg), frame='icrs')
+                    t_ra = t_coord.ra.deg
+                    t_dec = t_coord.dec.deg
+                    
+                    disc_time = Time(disc_date_str.replace(' ', 'T'), format='isot')
+                    
+                    # Limit to 12 months before shot
+                    if disc_time < start_date:
+                        continue
+                        
+                    # Compare with observation time (shot)
+                    if disc_time > obs_time:
+                        color = "#ef4444"  # Red (discovered after the shot)
+                        after_count += 1
+                    else:
+                        color = "#10b981"  # Green (discovered before/on the shot)
+                        before_count += 1
+                        
+                    prefix = "SN" if objtype else "AT"
+                    full_name = f"{prefix} {objname}"
+                    
+                    self.transient_objects.append({
+                        'name': full_name,
+                        'ra': t_ra,
+                        'dec': t_dec,
+                        'discovery_date': disc_date_str,
+                        'mag': disc_mag if disc_mag else "N/A",
+                        'type': objtype if objtype else "",
+                        'color': color
+                    })
+                except Exception:
+                    continue
+                    
+            self.render_canvas(is_dragging=False)
+            messagebox.showinfo(
+                "TNS Query Success",
+                f"Query TNS completed successfully!\n\n"
+                f"Transients found: {len(self.transient_objects)}\n"
+                f"- Discovered before/on shot (Green): {before_count}\n"
+                f"- Discovered after shot (Red): {after_count}\n\n"
+                f"Transients are marked with colored squares.",
+                parent=self.root
+            )
+        except Exception as e:
+            messagebox.showerror("TNS Query Error", f"Failed to retrieve transients from TNS:\n{e}", parent=self.root)
+        finally:
+            self.root.config(cursor="")
 
     def reset_sliders(self):
         self.slider_red_offset.set(0)
