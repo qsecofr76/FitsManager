@@ -583,9 +583,8 @@ class FitsManagerApp:
         self.visual_crop_box = None
         self.calib_stars = []
         
-        # Ensure dss_cache directory exists
-        import os
-        os.makedirs("dss_cache", exist_ok=True)
+        # Cleanup caches at startup if files count exceeds 300 per directory
+        self.cleanup_caches_startup()
         
         # Settings loader
         self.settings_path = "settings.json"
@@ -689,7 +688,6 @@ class FitsManagerApp:
         astrom_menu.add_command(label="Estimate Limiting Magnitude", command=self.estimate_limiting_magnitude)
         astrom_menu.add_checkbutton(label="Show Magnitude Limit Stars", variable=self.show_limiting_mag_stars, command=lambda: self.render_canvas(is_dragging=False))
         astrom_menu.add_command(label="Clear Calibration Stars", command=self.clear_calibration_stars)
-        astrom_menu.add_command(label="Clear Reference Sky Caches", command=self.clear_reference_sky_caches)
         self.menu_bar.add_cascade(label="Astrometry", menu=astrom_menu)
 
         # 2. Create Top Toolbar (Single row)
@@ -6113,37 +6111,27 @@ class FitsManagerApp:
         finally:
             self.root.config(cursor="")
 
-    def clear_reference_sky_caches(self):
-        import shutil
+    def cleanup_caches_startup(self):
         import os
-        ans = messagebox.askyesno(
-            "Clear Caches", 
-            "Are you sure you want to delete all cached DSS and PanSTARRS reference sky FITS files?\n"
-            "This will free up disk space but next queries will require downloading again.",
-            parent=self.root
-        )
-        if not ans:
-            return
-            
-        count = 0
         for cache_dir in ["dss_cache", "panstarrs_cache"]:
-            if os.path.exists(cache_dir):
-                for filename in os.listdir(cache_dir):
-                    if filename.endswith(".fits"):
-                        file_path = os.path.join(cache_dir, filename)
+            os.makedirs(cache_dir, exist_ok=True)
+            try:
+                files = []
+                for entry in os.scandir(cache_dir):
+                    if entry.is_file() and entry.name.endswith(".fits"):
+                        files.append((entry.path, entry.stat().st_mtime))
+                
+                if len(files) > 300:
+                    # Sort by modification time (oldest first)
+                    files.sort(key=lambda x: x[1])
+                    excess = len(files) - 300
+                    for i in range(excess):
                         try:
-                            os.remove(file_path)
-                            count += 1
+                            os.remove(files[i][0])
                         except Exception:
                             pass
-                            
-        # Clear currently loaded in-memory tiles as well
-        self.loaded_dss_tiles = []
-        self.dss_blend_ratio.set(0.0)
-        self.dss_warped_cache = None
-        self.render_canvas(is_dragging=False)
-        
-        messagebox.showinfo("Caches Cleared", f"Successfully deleted {count} cached sky survey FITS files.", parent=self.root)
+            except Exception:
+                pass
 
     def reset_sliders(self):
         self.slider_red_offset.set(0)
