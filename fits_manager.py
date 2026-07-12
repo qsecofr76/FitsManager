@@ -6160,6 +6160,7 @@ class FitsManagerApp:
                             pass
             except Exception:
                 pass
+from html.parser import HTMLParser
 
 class TNSHTMLParser(HTMLParser):
     def __init__(self):
