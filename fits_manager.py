@@ -1978,6 +1978,21 @@ class FitsManagerApp:
                 
         draw = ImageDraw.Draw(resized_pil)
         
+        # Load system fonts to make text overlays sharp and legible
+        font_std = None
+        font_large = None
+        try:
+            from PIL import ImageFont
+            for font_name in ["arial.ttf", "SegoeUI.ttf", "DejaVuSans.ttf", "tahoma.ttf", "cour.ttf"]:
+                try:
+                    font_std = ImageFont.truetype(font_name, size=11)
+                    font_large = ImageFont.truetype(font_name, size=14)
+                    break
+                except IOError:
+                    continue
+        except Exception:
+            pass
+
         # 1. Coordinate mapping helper for visual crop offsets
         h_orig, w_orig = self.debayered_cache.shape[:2]
         
@@ -2009,7 +2024,7 @@ class FitsManagerApp:
                 
                 if 0 <= ax < crop_new_w and 0 <= ay < crop_new_h:
                     self.draw_star_crosshair(draw, ax, ay, size=24, width=2)
-                    draw.text((ax + 26, ay + 26), ann['text'], fill=self.green_bright)
+                    draw.text((ax + 26, ay + 26), ann['text'], fill=self.green_bright, font=font_std)
             
         # 2. Draw Temporary Target marker
         if self.temp_marker:
@@ -2021,7 +2036,7 @@ class FitsManagerApp:
                 if self.temp_marker.get('type') == 'gaia_query':
                     r = 10
                     draw.rectangle([tx - r, ty - r, tx + r, ty + r], outline=self.green_bright, width=2)
-                    draw.text((tx + 15, ty - 8), "Gaia Query Target", fill=self.green_bright)
+                    draw.text((tx + 15, ty - 8), "Gaia Query Target", fill=self.green_bright, font=font_std)
                     
                     if self.temp_marker.get('catalog_ratio_x') is not None:
                         cx_px = self.temp_marker['catalog_ratio_x'] * w_orig
@@ -2032,10 +2047,10 @@ class FitsManagerApp:
                             size = 6
                             draw.line([cx_c - size, cy_c - size, cx_c + size, cy_c + size], fill="#ef4444", width=2)
                             draw.line([cx_c - size, cy_c + size, cx_c + size, cy_c - size], fill="#ef4444", width=2)
-                            draw.text((cx_c + 8, cy_c - 8), "Gaia Star Position", fill="#ef4444")
+                            draw.text((cx_c + 8, cy_c - 8), "Gaia Star Position", fill="#ef4444", font=font_std)
                 else:
                     self.draw_star_crosshair(draw, tx, ty, size=32, width=2)
-                    draw.text((tx + 34, ty + 34), f"Target: RA={self.temp_marker['ra']}\nDEC={self.temp_marker['dec']}", fill="#f43f5e")
+                    draw.text((tx + 34, ty + 34), f"Target: RA={self.temp_marker['ra']}\nDEC={self.temp_marker['dec']}", fill="#f43f5e", font=font_std)
             
         # Draw Limiting Magnitude Check Stars (colored circles)
         if self.show_limiting_mag_stars.get() and getattr(self, 'limiting_mag_check_stars', None):
@@ -2045,7 +2060,7 @@ class FitsManagerApp:
                     r_star = 12
                     color = star.get('color', '#facc15')
                     draw.ellipse([sx - r_star, sy - r_star, sx + r_star, sy + r_star], outline=color, width=2)
-                    draw.text((sx + 14, sy - 8), f"G={star['mag']:.1f}", fill=color)
+                    draw.text((sx + 14, sy - 8), f"G={star['mag']:.1f}", fill=color, font=font_std)
 
         # 3. Draw Catalog Stars Overlay (cyan circles)
         if self.show_catalog_stars.get() and self.catalog_stars and self.wcs:
@@ -2068,11 +2083,11 @@ class FitsManagerApp:
                             if star.get('is_variable'):
                                 # Red outline for variable stars, label with V and rounded mag (no decimals)
                                 draw.ellipse([sx - r_star, sy - r_star, sx + r_star, sy + r_star], outline="#ef4444", width=1)
-                                draw.text((sx + 10, sy - 8), f"V{int(round(star['mag']))}", fill="#ef4444")
+                                draw.text((sx + 10, sy - 8), f"V{int(round(star['mag']))}", fill="#ef4444", font=font_std)
                             else:
                                 # Electric blue outline for catalog stars
                                 draw.ellipse([sx - r_star, sy - r_star, sx + r_star, sy + r_star], outline="#2979ff", width=1)
-                                draw.text((sx + 10, sy - 8), f"{star['mag']:.2f}", fill="#2979ff")
+                                draw.text((sx + 10, sy - 8), f"{star['mag']:.2f}", fill="#2979ff", font=font_std)
                 except Exception:
                     continue
                     
@@ -2105,7 +2120,7 @@ class FitsManagerApp:
                                 (ax - r_ast, ay)
                             ]
                             draw.polygon(pts, outline="#f97316", width=2)
-                            draw.text((ax + 10, ay - 8), f"{ast['name']} ({ast['mag']:.1f})", fill="#f97316")
+                            draw.text((ax + 10, ay - 8), f"{ast['name']} ({ast['mag']:.1f})", fill="#f97316", font=font_std)
                 except Exception:
                     continue
                     
@@ -2126,7 +2141,7 @@ class FitsManagerApp:
                             disc_date = trans['discovery_date'].split()[0]
                             t_type = trans['type'] if trans['type'] else "Unclassified"
                             label_text = f"{trans['name']} ({t_type})\nMag: {trans['mag']}\nDisc: {disc_date}"
-                            draw.text((ax + 12, ay - 12), label_text, fill=color)
+                            draw.text((ax + 12, ay - 12), label_text, fill=color, font=font_large)
                 except Exception:
                     continue
                 
