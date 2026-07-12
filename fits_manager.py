@@ -3616,8 +3616,11 @@ class FitsManagerApp:
         if not os.path.exists("panstarrs_cache"):
             return None
         for filename in os.listdir("panstarrs_cache"):
-            if filename.startswith("panstarrs_") and filename.endswith(".fits"):
-                parts = filename.replace(".fits", "").split("_")
+            if filename.startswith("panstarrs_") and filename.lower().endswith(('.fits', '.jpg', '.jpeg')):
+                base_name = filename
+                for ext in [".fits", ".fit", ".jpg", ".jpeg"]:
+                    base_name = base_name.replace(ext, "")
+                parts = base_name.split("_")
                 if len(parts) == 4:
                     try:
                         file_ra = float(parts[1])
@@ -3631,7 +3634,11 @@ class FitsManagerApp:
                         dist_arcmin = np.sqrt(d_ra**2 + d_dec**2) * 60.0
                         
                         if dist_arcmin < 5.0 and file_size >= size - 1.0:
-                            return os.path.join("panstarrs_cache", filename)
+                            path = os.path.join("panstarrs_cache", filename)
+                            if filename.lower().endswith(('.jpg', '.jpeg')):
+                                if not os.path.exists(path + ".info.json"):
+                                    continue
+                            return path
                     except Exception:
                         pass
         return None
@@ -3690,15 +3697,39 @@ class FitsManagerApp:
         def add_tile_to_memory(file_path, r_val=None, d_val=None, should_render=True):
             try:
                 import os
-                if r_val is None or d_val is None:
+                is_fits_tile = file_path.lower().endswith(('.fits', '.fit'))
+                if not is_fits_tile and (r_val is None or d_val is None):
+                    # Clean up file path parts to parse coords from filename
+                    base = os.path.basename(file_path)
+                    for ext in [".fits", ".fit", ".jpg", ".jpeg", ".png"]:
+                        base = base.replace(ext, "")
+                    parts = base.split("_")
+                    if len(parts) == 4:
+                        r_val = float(parts[1])
+                        d_val = float(parts[2])
+                elif is_fits_tile and (r_val is None or d_val is None):
                     parts = os.path.basename(file_path).replace(".fits", "").split("_")
                     if len(parts) == 4:
                         r_val = float(parts[1])
                         d_val = float(parts[2])
-                with fits.open(file_path) as hdul:
-                    dss_data = hdul[0].data.astype(np.float32)
-                    dss_header = hdul[0].header
-                    wcs_obj = WCS(dss_header, naxis=2)
+
+                if is_fits_tile:
+                    with fits.open(file_path) as hdul:
+                        dss_data = hdul[0].data.astype(np.float32)
+                        dss_header = hdul[0].header
+                        wcs_obj = WCS(dss_header, naxis=2)
+                else:
+                    from PIL import Image
+                    import json
+                    pil_img = Image.open(file_path)
+                    # Flip vertically because PIL reads images with top-left origin, while WCS expects bottom-left origin (FITS standard)
+                    dss_data = np.flipud(np.array(pil_img.convert('L'), dtype=np.float32))
+                    
+                    # Load exact WCS keys from sidecar JSON file
+                    sidecar_path = file_path + ".info.json"
+                    with open(sidecar_path, 'r') as f:
+                        wcs_dict = json.load(f)
+                    wcs_obj = WCS(wcs_dict, naxis=2)
                 
                 # Background median matching to eliminate seams (stacco) between tiles
                 dss_data = np.nan_to_num(dss_data, nan=np.nanmedian(dss_data))
@@ -3741,8 +3772,11 @@ class FitsManagerApp:
         if os.path.exists("panstarrs_cache"):
             log_msg("[INFO] Preloading overlapping files from cache...")
             for filename in os.listdir("panstarrs_cache"):
-                if filename.startswith("panstarrs_") and filename.endswith(".fits"):
-                    parts = filename.replace(".fits", "").split("_")
+                if filename.startswith("panstarrs_") and filename.lower().endswith(('.fits', '.jpg', '.jpeg')):
+                    base_name = filename
+                    for ext in [".fits", ".fit", ".jpg", ".jpeg"]:
+                        base_name = base_name.replace(ext, "")
+                    parts = base_name.split("_")
                     if len(parts) == 4:
                         try:
                             file_ra = float(parts[1])
@@ -3782,9 +3816,9 @@ class FitsManagerApp:
                 if not os.path.exists("panstarrs_cache"):
                     os.makedirs("panstarrs_cache")
                     
-                tile_size_arcmin = 15.0
-                size_pix = 3600
-                step_deg = 0.20
+                tile_size_arcmin = 24.0
+                size_pix = 2880
+                step_deg = 0.40
                 
                 c_center = self.wcs.pixel_to_world(w_orig / 2.0, h_orig / 2.0)
                 c_right = self.wcs.pixel_to_world(w_orig, h_orig / 2.0)
@@ -3899,26 +3933,34 @@ class FitsManagerApp:
                         log_msg(f"[WARN] No PanSTARRS coverage found for RA={tile_ra:.4f}, DEC={tile_dec:.4f}. Skipping tile.")
                         continue
                         
-                    # 2. Fetch a tiny 1-pixel FITS cutout to resolve the WCS and get the exact skycell center
-                    log_msg("[QUERY] Fetching skycell WCS header (1-pixel probe)...")
-                    probe_url = f"https://ps1images.stsci.edu/cgi-bin/fitscut.cgi?ra={tile_ra}&dec={tile_dec}&size=1&format=fits&red={filename_path}"
-                    req_probe = urllib.request.Request(probe_url, headers={'User-Agent': 'Mozilla/5.0'})
-                    
+                    # 2. Resolve the true center coordinates of the skycell to prevent black borders
                     skycell_ra, skycell_dec = tile_ra, tile_dec
-                    try:
-                        import io
-                        from astropy.wcs import WCS
-                        with urllib.request.urlopen(req_probe, timeout=15, context=ssl_context) as resp_probe:
-                            probe_data = resp_probe.read()
-                        with fits.open(io.BytesIO(probe_data)) as hdul:
-                            wcs_obj = WCS(hdul[0].header)
-                            # Convert pixel (3000, 3000) to find the exact center of this skycell
-                            sky_center = wcs_obj.pixel_to_world(3000, 3000)
-                            skycell_ra = sky_center.ra.deg
-                            skycell_dec = sky_center.dec.deg
-                        log_msg(f"[SUCCESS] Resolved true skycell center: RA={skycell_ra:.6f}, DEC={skycell_dec:.6f}")
-                    except Exception as probe_err:
-                        log_msg(f"[WARN] Failed to resolve skycell center: {probe_err}. Using requested coordinates.")
+                    skycell = None
+                    import re
+                    match = re.search(r'skycell\.(\d+\.\d+)', filename_path)
+                    if match:
+                        skycell = match.group(1)
+                        
+                    if skycell:
+                        log_msg(f"[QUERY] Resolving true center for skycell {skycell}...")
+                        metadata_url = f"https://ps1images.stsci.edu/cgi-bin/ps1filenames.py?skycell={skycell}"
+                        req_meta = urllib.request.Request(metadata_url, headers={'User-Agent': 'Mozilla/5.0'})
+                        try:
+                            with urllib.request.urlopen(req_meta, timeout=15, context=ssl_context) as resp_meta:
+                                meta_content = resp_meta.read().decode('utf-8')
+                            meta_lines = meta_content.strip().split('\n')
+                            if len(meta_lines) > 1:
+                                meta_header = meta_lines[0].split()
+                                if 'ra' in meta_header and 'dec' in meta_header:
+                                    ra_idx = meta_header.index('ra')
+                                    dec_idx = meta_header.index('dec')
+                                    meta_row = meta_lines[1].split()
+                                    if len(meta_row) > max(ra_idx, dec_idx):
+                                        skycell_ra = float(meta_row[ra_idx])
+                                        skycell_dec = float(meta_row[dec_idx])
+                                        log_msg(f"[SUCCESS] Resolved true skycell center: RA={skycell_ra:.6f}, DEC={skycell_dec:.6f}")
+                        except Exception as meta_err:
+                            log_msg(f"[WARN] Failed to resolve skycell center: {meta_err}. Using requested coordinates.")
                         
                     # 3. Check if this exact skycell center is already in cache
                     cached_path = self.get_cached_panstarrs_tile(skycell_ra, skycell_dec, tile_size_arcmin)
@@ -3929,16 +3971,68 @@ class FitsManagerApp:
                             log_win.after(0, lambda p=cached_path, r=skycell_ra, d=skycell_dec: add_tile_to_memory(p, r, d))
                         continue
                         
-                    # 4. Download full-size cutout centered EXACTLY on the skycell center to prevent black borders
-                    cutout_url = f"https://ps1images.stsci.edu/cgi-bin/fitscut.cgi?ra={skycell_ra}&dec={skycell_dec}&size={size_pix}&format=fits&red={filename_path}"
-                    log_msg(f"[QUERY] Fetching PanSTARRS FITS centered on skycell...")
+                    # 4. Fetch the 1-pixel FITS probe first to resolve the exact parent skycell WCS projection parameters
+                    log_msg("[QUERY] Fetching skycell WCS projection (1-pixel probe)...")
+                    probe_url = f"https://ps1images.stsci.edu/cgi-bin/fitscut.cgi?ra={skycell_ra}&dec={skycell_dec}&size=1&format=fits&red={filename_path}"
+                    req_probe = urllib.request.Request(probe_url, headers={'User-Agent': 'Mozilla/5.0'})
+                    
+                    probe_wcs_dict = None
+                    try:
+                        with urllib.request.urlopen(req_probe, timeout=15, context=ssl_context) as resp_probe:
+                            probe_data = resp_probe.read()
+                        import io
+                        with fits.open(io.BytesIO(probe_data)) as hdul_probe:
+                            probe_header = hdul_probe[0].header
+                            
+                            crpix1_1 = probe_header.get('CRPIX1', 0.0)
+                            crpix2_1 = probe_header.get('CRPIX2', 0.0)
+                            
+                            # Shift from 1-pixel probe center to 5760x5760px cutout center
+                            # Offset: (size_pix - 1.0) / 2.0 = (5760 - 1) / 2 = 2879.5
+                            crpix1_5760 = crpix1_1 + 2879.5
+                            crpix2_5760 = crpix2_1 + 2879.5
+                            
+                            # Scale to 1200px (F = 5760 / 1200 = 4.8)
+                            F = 4.8
+                            crpix1_1200 = (crpix1_5760 - 0.5) / F + 0.5
+                            crpix2_1200 = (crpix2_5760 - 0.5) / F + 0.5
+                            
+                            cdelt1_1200 = probe_header.get('CDELT1', 6.94444461259988e-05) * F
+                            cdelt2_1200 = probe_header.get('CDELT2', 6.94444461259988e-05) * F
+                            
+                            probe_wcs_dict = {
+                                'CTYPE1': probe_header.get('CTYPE1', 'RA---TAN'),
+                                'CTYPE2': probe_header.get('CTYPE2', 'DEC--TAN'),
+                                'CRVAL1': probe_header.get('CRVAL1', 0.0),
+                                'CRVAL2': probe_header.get('CRVAL2', 0.0),
+                                'CRPIX1': crpix1_1200,
+                                'CRPIX2': crpix2_1200,
+                                'CDELT1': cdelt1_1200,
+                                'CDELT2': cdelt2_1200
+                            }
+                            # Copy PC matrix keys
+                            for k in ['PC1_1', 'PC1_2', 'PC2_1', 'PC2_2', 'PC001001', 'PC001002', 'PC002001', 'PC002002']:
+                                if k in probe_header:
+                                    probe_wcs_dict[k] = probe_header[k]
+                            if 'RADESYS' in probe_header:
+                                probe_wcs_dict['RADESYS'] = probe_header['RADESYS']
+                            if 'MJD-OBS' in probe_header:
+                                probe_wcs_dict['MJD-OBS'] = probe_header['MJD-OBS']
+                            
+                        log_msg("[SUCCESS] Resolved exact parent WCS parameters.")
+                    except Exception as probe_err:
+                        raise Exception(f"Failed to query 1-pixel FITS WCS probe: {probe_err}")
+                        
+                    # 5. Download JPEG cutout scaled to 1200px (covering the full 24 arcmin skycell) to prevent black borders and slow downloads
+                    cutout_url = f"https://ps1images.stsci.edu/cgi-bin/fitscut.cgi?ra={skycell_ra}&dec={skycell_dec}&size=5760&output_size=1200&format=jpg&red={filename_path}"
+                    log_msg(f"[QUERY] Fetching PanSTARRS JPEG centered on skycell...")
                     
                     req2 = urllib.request.Request(cutout_url, headers={'User-Agent': 'Mozilla/5.0'})
                     with urllib.request.urlopen(req2, timeout=30, context=ssl_context) as response2:
                         content_length = response2.headers.get('Content-Length')
                         total_bytes = int(content_length) if content_length else 0
                         if total_bytes:
-                            log_msg(f"[INFO] File size: {total_bytes / 1024.0 / 1024.0:.2f} MB")
+                            log_msg(f"[INFO] Payload size: {total_bytes / 1024.0 / 1024.0:.2f} MB")
                             set_progress(0, total_bytes)
                         else:
                             set_progress(0, 100)
@@ -3963,26 +4057,38 @@ class FitsManagerApp:
                                 current_time = time.time()
                                 if current_time - last_log_time > 1.5 or downloaded_bytes == total_bytes:
                                     pct = (downloaded_bytes / total_bytes) * 100
-                                    log_msg(f"[INFO] Downloading: {pct:.1f}%")
+                                    log_msg(f"[INFO] Downloading: {pct:.1f}% ({downloaded_bytes / 1024.0 / 1024.0:.2f} MB)")
                                     last_log_time = current_time
                             else:
-                                set_progress(downloaded_bytes % 100, 100)
+                                virtual_max = 500 * 1024 # JPEG is typically around 200-500 KB
+                                set_progress(min(downloaded_bytes, virtual_max), virtual_max)
+                                import time
+                                current_time = time.time()
+                                if current_time - last_log_time > 1.5:
+                                    log_msg(f"[INFO] Downloaded: {downloaded_bytes / 1024.0 / 1024.0:.2f} MB")
+                                    last_log_time = current_time
                                 
                     if b"html" in img_data[:100].lower() or b"<!doctype" in img_data[:100].lower():
                         raise Exception("STScI fitscut service returned an HTML error page.")
                         
-                    cache_filename = f"panstarrs_{skycell_ra:.6f}_{skycell_dec:.6f}_{tile_size_arcmin:.1f}.fits"
+                    cache_filename = f"panstarrs_{skycell_ra:.6f}_{skycell_dec:.6f}_{tile_size_arcmin:.1f}.jpg"
                     save_path = os.path.join("panstarrs_cache", cache_filename)
                     with open(save_path, "wb") as f:
                         f.write(img_data)
-                    log_msg(f"[CACHE] Saved to cache: {cache_filename}")
+                        
+                    # Save the resolved WCS dictionary to the sidecar JSON file
+                    import json
+                    with open(save_path + ".info.json", 'w') as f_json:
+                        json.dump(probe_wcs_dict, f_json, indent=2)
+                        
+                    log_msg(f"[CACHE] Saved to cache: {cache_filename} and sidecar .info.json")
                     
                     log_win.after(0, lambda p=save_path, r=skycell_ra, d=skycell_dec: add_tile_to_memory(p, r, d))
                     
                 log_win.after(0, finish_all_done)
                 
             except Exception as e:
-                log_win.after(0, lambda: finish_error(e))
+                log_win.after(0, lambda err=e: finish_error(err))
                 
         import threading
         download_thread = threading.Thread(target=worker)
