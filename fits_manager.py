@@ -4330,6 +4330,8 @@ class FitsManagerApp:
                 dec_val = self.fits_header[key]
                 break
                 
+        init_ra = ""
+        init_dec = ""
         if ra_val != "":
             init_ra = str(ra_val)
         if dec_val != "":
