@@ -693,7 +693,6 @@ class FitsManagerApp:
         astrom_menu.add_separator()
         astrom_menu.add_command(label="Query TNS/Supernova/Nova", command=self.query_tns_transients)
         astrom_menu.add_checkbutton(label="Show Supernova/nova", variable=self.show_transients, command=lambda: self.render_canvas(is_dragging=False))
-        astrom_menu.add_command(label="Configure TNS Credentials...", command=self.configure_tns_credentials)
         self.menu_bar.add_cascade(label="Astrometry", menu=astrom_menu)
 
         # 2. Create Top Toolbar (Single row)
@@ -6162,81 +6161,12 @@ class FitsManagerApp:
             except Exception:
                 pass
 
-    def configure_tns_credentials(self):
-        import tkinter.simpledialog as sd
-        dialog = tk.Toplevel(self.root)
-        dialog.title("Configure TNS API Credentials")
-        dialog.geometry("450x260")
-        dialog.configure(bg=self.panel_color)
-        dialog.transient(self.root)
-        dialog.grab_set()
-        
-        lbl_title = tk.Label(dialog, text="Transient Name Server API Credentials", bg=self.panel_color, fg=self.text_color, font=("Segoe UI", 11, "bold"))
-        lbl_title.pack(pady=10)
-        
-        grid_frame = tk.Frame(dialog, bg=self.panel_color)
-        grid_frame.pack(padx=20, pady=10, fill="x")
-        
-        # Bot API Key
-        lbl_key = tk.Label(grid_frame, text="Bot API Key:", bg=self.panel_color, fg=self.text_color, font=("Segoe UI", 9, "bold"), anchor="w")
-        lbl_key.grid(row=0, column=0, sticky="ew", pady=5)
-        ent_key = tk.Entry(grid_frame, bg=self.bg_color, fg=self.text_color, insertbackground="white", bd=0, highlightthickness=1, highlightbackground=self.control_bg)
-        ent_key.insert(0, self.settings.get("tns_api_key", ""))
-        ent_key.grid(row=0, column=1, sticky="ew", pady=5, padx=10)
-        
-        # Bot ID
-        lbl_id = tk.Label(grid_frame, text="Bot ID:", bg=self.panel_color, fg=self.text_color, font=("Segoe UI", 9, "bold"), anchor="w")
-        lbl_id.grid(row=1, column=0, sticky="ew", pady=5)
-        ent_id = tk.Entry(grid_frame, bg=self.bg_color, fg=self.text_color, insertbackground="white", bd=0, highlightthickness=1, highlightbackground=self.control_bg)
-        ent_id.insert(0, self.settings.get("tns_bot_id", ""))
-        ent_id.grid(row=1, column=1, sticky="ew", pady=5, padx=10)
-        
-        # Bot Name
-        lbl_name = tk.Label(grid_frame, text="Bot Name:", bg=self.panel_color, fg=self.text_color, font=("Segoe UI", 9, "bold"), anchor="w")
-        lbl_name.grid(row=2, column=0, sticky="ew", pady=5)
-        ent_name = tk.Entry(grid_frame, bg=self.bg_color, fg=self.text_color, insertbackground="white", bd=0, highlightthickness=1, highlightbackground=self.control_bg)
-        ent_name.insert(0, self.settings.get("tns_bot_name", ""))
-        ent_name.grid(row=2, column=1, sticky="ew", pady=5, padx=10)
-        
-        grid_frame.columnconfigure(1, weight=1)
-        
-        def on_save():
-            self.settings["tns_api_key"] = ent_key.get().strip()
-            self.settings["tns_bot_id"] = ent_id.get().strip()
-            self.settings["tns_bot_name"] = ent_name.get().strip()
-            self.save_settings()
-            messagebox.showinfo("Success", "TNS credentials saved successfully!", parent=dialog)
-            dialog.destroy()
-            
-        btn_frame = tk.Frame(dialog, bg=self.panel_color)
-        btn_frame.pack(pady=15, fill="x")
-        
-        btn_save = tk.Button(btn_frame, text="Save Credentials", command=on_save, bg="#10b981", fg="white", font=("Segoe UI", 9, "bold"), bd=0, padx=15, pady=5)
-        btn_save.pack(side="right", padx=20)
-        btn_cancel = tk.Button(btn_frame, text="Cancel", command=dialog.destroy, bg="#374151", fg="white", font=("Segoe UI", 9, "bold"), bd=0, padx=15, pady=5)
-        btn_cancel.pack(side="right", padx=10)
-
     def query_tns_transients(self):
         if self.fits_data is None:
             messagebox.showerror("Error", "Load an image first.", parent=self.root)
             return
         if not self.wcs:
             messagebox.showerror("Error", "WCS solution is required. Please plate-solve the image first.", parent=self.root)
-            return
-            
-        api_key = self.settings.get("tns_api_key", "").strip()
-        bot_id = self.settings.get("tns_bot_id", "").strip()
-        bot_name = self.settings.get("tns_bot_name", "").strip()
-        
-        if not api_key or not bot_id or not bot_name:
-            ans = messagebox.askyesno(
-                "TNS Credentials Missing",
-                "Transient Name Server (TNS) queries require Bot API credentials.\n"
-                "Would you like to configure your TNS Bot credentials now?",
-                parent=self.root
-            )
-            if ans:
-                self.configure_tns_credentials()
             return
             
         # Open Observation Time Dialog
@@ -6270,14 +6200,14 @@ class FitsManagerApp:
                 self.observation_time = Time(time_str, format='isot')
                 self.fits_header['DATE-OBS'] = self.observation_time.isot
                 dialog.destroy()
-                self.execute_tns_query(api_key, bot_id, bot_name)
+                self.execute_fink_query()
             except Exception as ex:
                 messagebox.showerror("Error", f"Invalid observation date format:\n{ex}", parent=dialog)
                 
         btn_confirm = tk.Button(dialog, text="Confirm & Search", command=on_confirm, bg="#10b981", fg="white", font=("Segoe UI", 9, "bold"), bd=0, padx=15, pady=5)
         btn_confirm.pack(pady=10)
 
-    def execute_tns_query(self, api_key, bot_id, bot_name):
+    def execute_fink_query(self):
         from astropy.coordinates import SkyCoord
         import astropy.units as u
         from astropy.time import Time
@@ -6286,7 +6216,6 @@ class FitsManagerApp:
         import urllib.parse
         import ssl
         import json
-        import io
         
         self.root.config(cursor="watch")
         self.root.update()
@@ -6298,97 +6227,87 @@ class FitsManagerApp:
             corner_coord = self.wcs.pixel_to_world(0, 0)
             radius_deg = center_coord.separation(corner_coord).deg
             radius_arcmin = radius_deg * 60.0
-            radius_arcmin = np.clip(radius_arcmin, 3.0, 60.0)
-            
-            coord_sky = SkyCoord(ra=center_coord.ra.deg*u.deg, dec=center_coord.dec.deg*u.deg, frame='icrs')
-            ra_hms = coord_sky.ra.to_string(unit=u.hour, sep=":", precision=2)
-            dec_dms = coord_sky.dec.to_string(unit=u.degree, sep=":", precision=2, alwayssign=True)
+            radius_arcsec = radius_arcmin * 60.0
+            radius_arcsec = np.clip(radius_arcsec, 180.0, 18000.0)
             
             obs_time = self.observation_time
             start_date = obs_time - datetime.timedelta(days=365)
             
-            tns_data = {
-                "ra": ra_hms,
-                "dec": dec_dms,
-                "radius": f"{radius_arcmin:.2f}",
-                "units": "arcmin"
+            url = "https://api.fink-portal.org/api/v1/conesearch"
+            params = {
+                'ra': f"{center_coord.ra.deg:.6f}",
+                'dec': f"{center_coord.dec.deg:.6f}",
+                'radius': f"{radius_arcsec:.2f}"
             }
             
-            payload = {
-                "api_key": api_key,
-                "data": json.dumps(tns_data)
-            }
-            
-            post_data = urllib.parse.urlencode(payload).encode('utf-8')
-            
-            tns_marker = {
-                "tns_id": int(bot_id),
-                "type": "bot",
-                "name": bot_name
-            }
-            headers = {
-                "User-Agent": f"tns_marker{json.dumps(tns_marker)}",
-                "Content-Type": "application/x-www-form-urlencoded"
-            }
-            
-            url = "https://www.wis-tns.org/api/get/search"
-            req = urllib.request.Request(url, data=post_data, headers=headers)
+            payload = json.dumps(params).encode('utf-8')
+            req = urllib.request.Request(
+                url, 
+                data=payload,
+                headers={'Content-Type': 'application/json', 'User-Agent': 'Mozilla/5.0'}
+            )
             
             ssl_context = ssl._create_unverified_context()
             with urllib.request.urlopen(req, timeout=30, context=ssl_context) as response:
-                resp_data = json.loads(response.read().decode('utf-8'))
+                alerts = json.loads(response.read().decode('utf-8'))
                 
-            status_code = resp_data.get("status_code")
-            if str(status_code) != "200":
-                err_msg = resp_data.get("id_message", "Unknown TNS API error.")
-                raise Exception(f"TNS API returned error status {status_code}: {err_msg}")
+            grouped = {}
+            for alert in alerts:
+                obj_id = alert.get('i:objectId')
+                tns_name = alert.get('d:tns')
+                key = tns_name if tns_name else obj_id
+                if not key:
+                    continue
+                    
+                if key not in grouped:
+                    grouped[key] = []
+                grouped[key].append(alert)
                 
-            results = resp_data.get("data", {}).get("results", [])
-            
             self.transient_objects = []
             before_count = 0
             after_count = 0
             
-            for res in results:
-                objname = res.get("objname")
-                t_ra_str = res.get("ra")
-                t_dec_str = res.get("dec")
-                disc_date_str = res.get("discoverydate")
-                disc_mag = res.get("discoverymag")
-                objtype = res.get("objtype")
+            for key, obj_alerts in grouped.items():
+                disc_alert = min(obj_alerts, key=lambda x: x.get('i:jd', 9999999.0))
                 
-                if not objname or not t_ra_str or not t_dec_str or not disc_date_str:
-                    continue
-                    
                 try:
-                    t_coord = SkyCoord(ra=t_ra_str, dec=t_dec_str, unit=(u.hourangle, u.deg), frame='icrs')
-                    t_ra = t_coord.ra.deg
-                    t_dec = t_coord.dec.deg
+                    jd = disc_alert.get('i:jd')
+                    if not jd:
+                        continue
+                    disc_time = Time(jd, format='jd')
                     
-                    disc_time = Time(disc_date_str.replace(' ', 'T'), format='isot')
-                    
-                    # Limit to 12 months before shot
                     if disc_time < start_date:
                         continue
                         
-                    # Compare with observation time (shot)
                     if disc_time > obs_time:
-                        color = "#ef4444"  # Red (discovered after the shot)
+                        color = "#ef4444"
                         after_count += 1
                     else:
-                        color = "#10b981"  # Green (discovered before/on the shot)
+                        color = "#10b981"
                         before_count += 1
                         
-                    prefix = "SN" if objtype else "AT"
-                    full_name = f"{prefix} {objname}"
+                    ra = disc_alert.get('i:ra')
+                    dec = disc_alert.get('i:dec')
+                    mag = disc_alert.get('i:magpsf')
+                    classification = disc_alert.get('v:classification', '')
                     
+                    is_candidate = any(w in classification.lower() for w in ['sn', 'supernova', 'nova', 'cv', 'transient'])
+                    if not disc_alert.get('d:tns') and not is_candidate:
+                        continue
+                        
+                    date_str = disc_time.iso.split()[0]
+                    
+                    name = disc_alert.get('d:tns')
+                    if not name:
+                        name = f"ZTF {disc_alert.get('i:objectId')}"
+                        
                     self.transient_objects.append({
-                        'name': full_name,
-                        'ra': t_ra,
-                        'dec': t_dec,
-                        'discovery_date': disc_date_str,
-                        'mag': disc_mag if disc_mag else "N/A",
-                        'type': objtype if objtype else "",
+                        'name': name,
+                        'ra': float(ra),
+                        'dec': float(dec),
+                        'discovery_date': date_str,
+                        'mag': f"{mag:.1f}" if mag else "N/A",
+                        'type': classification,
                         'color': color
                     })
                 except Exception:
@@ -6396,8 +6315,8 @@ class FitsManagerApp:
                     
             self.render_canvas(is_dragging=False)
             messagebox.showinfo(
-                "TNS Query Success",
-                f"Query TNS completed successfully!\n\n"
+                "Fink Broker Search Success",
+                f"Query completed successfully using Fink public database!\n\n"
                 f"Transients found: {len(self.transient_objects)}\n"
                 f"- Discovered before/on shot (Green): {before_count}\n"
                 f"- Discovered after shot (Red): {after_count}\n\n"
@@ -6405,7 +6324,7 @@ class FitsManagerApp:
                 parent=self.root
             )
         except Exception as e:
-            messagebox.showerror("TNS Query Error", f"Failed to retrieve transients from TNS:\n{e}", parent=self.root)
+            messagebox.showerror("Fink Search Error", f"Failed to retrieve transients from Fink Broker:\n{e}", parent=self.root)
         finally:
             self.root.config(cursor="")
 
