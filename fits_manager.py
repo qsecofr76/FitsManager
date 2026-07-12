@@ -3816,31 +3816,13 @@ class FitsManagerApp:
                         
                     log_msg(f"\n--- Loading tile {idx+1}/{len(remaining_points)} at RA={tile_ra:.4f}, DEC={tile_dec:.4f} ---")
                     
-                    cached_path = self.get_cached_panstarrs_tile(tile_ra, tile_dec, tile_size_arcmin)
-                    if cached_path:
-                        log_msg(f"[CACHE] Found local cache: {os.path.basename(cached_path)}")
-                        log_win.after(0, lambda p=cached_path: add_tile_to_memory(p))
-                        continue
-                        
+                    # 1. Resolve filename first using ps1filenames.py
                     filenames_url = f"https://ps1images.stsci.edu/cgi-bin/ps1filenames.py?ra={tile_ra}&dec={tile_dec}&filters=r"
-                    log_msg(f"[QUERY] Resolving file path from PS1 database...")
+                    log_msg(f"[QUERY] Resolving skycell for RA={tile_ra:.4f}, DEC={tile_dec:.4f}...")
                     
                     req1 = urllib.request.Request(filenames_url, headers={'User-Agent': 'Mozilla/5.0'})
                     filename_path = None
-                    with urllib.request.urlopen(req1, timeout=20, context=ssl_context) as response1:
-                        content = response1.read().decode('utf-8')
-                        lines = content.strip().split('\n')
-                        if len(lines) > 1:
-                            header = lines[0].split()
-                            if 'filename' in header:
-                                fn_idx = header.index('filename')
-                                row1 = lines[1].split()
-                                if len(row1) > fn_idx:
-                                    filename_path = row1[fn_idx]
-                                    
-                    if not filename_path:
-                        filenames_url = f"https://ps1images.stsci.edu/cgi-bin/ps1filenames.py?ra={tile_ra}&dec={tile_dec}&filters=g"
-                        req1 = urllib.request.Request(filenames_url, headers={'User-Agent': 'Mozilla/5.0'})
+                    try:
                         with urllib.request.urlopen(req1, timeout=20, context=ssl_context) as response1:
                             content = response1.read().decode('utf-8')
                             lines = content.strip().split('\n')
@@ -3851,13 +3833,63 @@ class FitsManagerApp:
                                     row1 = lines[1].split()
                                     if len(row1) > fn_idx:
                                         filename_path = row1[fn_idx]
+                    except Exception:
+                        pass
                                         
+                    if not filename_path:
+                        filenames_url = f"https://ps1images.stsci.edu/cgi-bin/ps1filenames.py?ra={tile_ra}&dec={tile_dec}&filters=g"
+                        req1 = urllib.request.Request(filenames_url, headers={'User-Agent': 'Mozilla/5.0'})
+                        try:
+                            with urllib.request.urlopen(req1, timeout=20, context=ssl_context) as response1:
+                                content = response1.read().decode('utf-8')
+                                lines = content.strip().split('\n')
+                                if len(lines) > 1:
+                                    header = lines[0].split()
+                                    if 'filename' in header:
+                                        fn_idx = header.index('filename')
+                                        row1 = lines[1].split()
+                                        if len(row1) > fn_idx:
+                                            filename_path = row1[fn_idx]
+                        except Exception:
+                            pass
+                                            
                     if not filename_path:
                         log_msg(f"[WARN] No PanSTARRS coverage found for RA={tile_ra:.4f}, DEC={tile_dec:.4f}. Skipping tile.")
                         continue
                         
-                    cutout_url = f"https://ps1images.stsci.edu/cgi-bin/fitscut.cgi?ra={tile_ra}&dec={tile_dec}&size={size_pix}&format=fits&red={filename_path}"
-                    log_msg(f"[QUERY] Fetching PanSTARRS FITS...")
+                    # 2. Fetch a tiny 1-pixel FITS cutout to resolve the WCS and get the exact skycell center
+                    log_msg("[QUERY] Fetching skycell WCS header (1-pixel probe)...")
+                    probe_url = f"https://ps1images.stsci.edu/cgi-bin/fitscut.cgi?ra={tile_ra}&dec={tile_dec}&size=1&format=fits&red={filename_path}"
+                    req_probe = urllib.request.Request(probe_url, headers={'User-Agent': 'Mozilla/5.0'})
+                    
+                    skycell_ra, skycell_dec = tile_ra, tile_dec
+                    try:
+                        import io
+                        from astropy.wcs import WCS
+                        with urllib.request.urlopen(req_probe, timeout=15, context=ssl_context) as resp_probe:
+                            probe_data = resp_probe.read()
+                        with fits.open(io.BytesIO(probe_data)) as hdul:
+                            wcs_obj = WCS(hdul[0].header)
+                            # Convert pixel (3000, 3000) to find the exact center of this skycell
+                            sky_center = wcs_obj.pixel_to_world(3000, 3000)
+                            skycell_ra = sky_center.ra.deg
+                            skycell_dec = sky_center.dec.deg
+                        log_msg(f"[SUCCESS] Resolved true skycell center: RA={skycell_ra:.6f}, DEC={skycell_dec:.6f}")
+                    except Exception as probe_err:
+                        log_msg(f"[WARN] Failed to resolve skycell center: {probe_err}. Using requested coordinates.")
+                        
+                    # 3. Check if this exact skycell center is already in cache
+                    cached_path = self.get_cached_panstarrs_tile(skycell_ra, skycell_dec, tile_size_arcmin)
+                    if cached_path:
+                        log_msg(f"[CACHE] Found local cache for skycell center: {os.path.basename(cached_path)}")
+                        # Check if already loaded in memory to prevent duplicates
+                        if not any(abs(t.get('ra', 0.0) - skycell_ra) < 0.001 and abs(t.get('dec', 0.0) - skycell_dec) < 0.001 for t in self.loaded_dss_tiles):
+                            log_win.after(0, lambda p=cached_path, r=skycell_ra, d=skycell_dec: add_tile_to_memory(p, r, d))
+                        continue
+                        
+                    # 4. Download full-size cutout centered EXACTLY on the skycell center to prevent black borders
+                    cutout_url = f"https://ps1images.stsci.edu/cgi-bin/fitscut.cgi?ra={skycell_ra}&dec={skycell_dec}&size={size_pix}&format=fits&red={filename_path}"
+                    log_msg(f"[QUERY] Fetching PanSTARRS FITS centered on skycell...")
                     
                     req2 = urllib.request.Request(cutout_url, headers={'User-Agent': 'Mozilla/5.0'})
                     with urllib.request.urlopen(req2, timeout=30, context=ssl_context) as response2:
@@ -3897,13 +3929,13 @@ class FitsManagerApp:
                     if b"html" in img_data[:100].lower() or b"<!doctype" in img_data[:100].lower():
                         raise Exception("STScI fitscut service returned an HTML error page.")
                         
-                    cache_filename = f"panstarrs_{tile_ra:.6f}_{tile_dec:.6f}_{tile_size_arcmin:.1f}.fits"
+                    cache_filename = f"panstarrs_{skycell_ra:.6f}_{skycell_dec:.6f}_{tile_size_arcmin:.1f}.fits"
                     save_path = os.path.join("panstarrs_cache", cache_filename)
                     with open(save_path, "wb") as f:
                         f.write(img_data)
                     log_msg(f"[CACHE] Saved to cache: {cache_filename}")
                     
-                    log_win.after(0, lambda p=save_path: add_tile_to_memory(p))
+                    log_win.after(0, lambda p=save_path, r=skycell_ra, d=skycell_dec: add_tile_to_memory(p, r, d))
                     
                 log_win.after(0, finish_all_done)
                 
