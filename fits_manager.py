@@ -6218,7 +6218,11 @@ class TNSHTMLParser(HTMLParser):
                         self.current_row['discovery_date'] = val
                 self.current_class = None
 
-    def query_tns_transients(self):
+
+# ---- FitsManagerApp methods added below TNSHTMLParser ----
+# These are monkey-patched onto FitsManagerApp after class definition
+# so they have access to self.root, self.wcs, etc.
+def _query_tns_transients(self):
         if self.fits_data is None:
             messagebox.showerror("Error", "Load an image first.", parent=self.root)
             return
@@ -6264,7 +6268,7 @@ class TNSHTMLParser(HTMLParser):
         btn_confirm = tk.Button(dialog, text="Confirm & Search", command=on_confirm, bg="#10b981", fg="white", font=("Segoe UI", 9, "bold"), bd=0, padx=15, pady=5)
         btn_confirm.pack(pady=10)
 
-    def execute_tns_query(self):
+def _execute_tns_query(self):
         from astropy.coordinates import SkyCoord
         import astropy.units as u
         from astropy.time import Time
@@ -6416,15 +6420,22 @@ class TNSHTMLParser(HTMLParser):
                 
         log_win.after(200, run_query)
 
-    def reset_sliders(self):
-        self.slider_red_offset.set(0)
-        self.slider_green_offset.set(0)
-        self.slider_blue_offset.set(0)
-        self.slider_brightness.set(0)
-        self.slider_contrast.set(0)
-        self.slider_smooth.set(0)
-        self.process_and_update(is_dragging=False)
-        
+
+FitsManagerApp.query_tns_transients = _query_tns_transients
+FitsManagerApp.execute_tns_query = _execute_tns_query
+
+
+def _reset_sliders(self):
+    self.slider_red_offset.set(0)
+    self.slider_green_offset.set(0)
+    self.slider_blue_offset.set(0)
+    self.slider_brightness.set(0)
+    self.slider_contrast.set(0)
+    self.slider_smooth.set(0)
+    self.process_and_update(is_dragging=False)
+
+
+FitsManagerApp.reset_sliders = _reset_sliders
 try:
     from astropy.wcs.utils import proj_plane_pixel_scales
 except ImportError:
