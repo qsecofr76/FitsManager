@@ -6228,7 +6228,7 @@ class FitsManagerApp:
             radius_deg = center_coord.separation(corner_coord).deg
             radius_arcmin = radius_deg * 60.0
             radius_arcsec = radius_arcmin * 60.0
-            radius_arcsec = np.clip(radius_arcsec, 180.0, 3600.0)
+            radius_arcsec = np.clip(radius_arcsec, 180.0, 18000.0)
             
             obs_time = self.observation_time
             start_date = obs_time - datetime.timedelta(days=365)
