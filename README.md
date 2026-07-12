@@ -9,21 +9,13 @@ FitsManager è un'applicazione desktop leggera per Windows dedicata alla visuali
 
 ## Novità ed Evoluzione (News: v1.0.1 vs v1.1.0)
 
-La versione **1.1.0** introduce radicali miglioramenti delle funzionalità di ricerca transienti, persistenza e supporto a file non-FITS rispetto alla precedente versione 1.0.1:
+La versione **1.1.0** introduce importanti implementazioni rispetto alla precedente versione 1.0.1:
 
-* 🪐 **Query TNS a Zero Credenziali (Supernova/Nova)**:
-  * Sostituite le chiamate con credenziali TNS e l'API instabile di Fink con una ricerca diretta tramite richieste `GET` sulla pagina pubblica del **Transient Name Server (TNS)**.
-  * Consente di rilevare istantaneamente transienti ed eventi appena scoperti (come *SN 2026sqf* su *NGC 3310*) in modo del tutto gratuito e indipendente da chiavi API o registrazioni bot.
-* 🖥️ **Finestra di Debug Diagnostico TNS**:
-  * Introdotta una comoda finestra di log in tempo reale che traccia la conversione in sessagesimale, l'URL esatto interrogato, la dimensione dei pacchetti ricevuti e il processo di associazione coordinate celesti.
-* ✍️ **Supporto WCS e Sidecar JSON per immagini standard (PNG/JPG/TIFF)**:
-  * Risolto il crash in fase di salvataggio WCS per le foto non native FITS. Se l'immagine caricata è un file standard, il programma salva ora le coordinate WCS e l'intero header FITS virtuale in un file sidecar **`nomefile.ext.info.json`**, ricaricandolo in automatico all'avvio successivo.
-* ⚙️ **Persistenza Parametri di Risoluzione (Plate Solve Settings)**:
-  * Lunghezza focale, dimensione pixel e raggio di ricerca confermati nel dialog di risoluzione vengono ora memorizzati stabilmente in `settings.json`, permettendo la precompilazione automatica del form su qualsiasi immagine successiva sprovvista di metadata.
-* 👁️ **Miglioramento Visivo delle Scritte (TrueType Font Overlays)**:
-  * Sostituiti i vecchi font bitmap predefiniti di PIL con i font TrueType di sistema vettoriali (Arial, Segoe UI, DejaVu). I transienti TNS vengono ora marcati con scritte di dimensioni maggiori (**14pt** contro gli 11pt standard) per risaltare chiaramente all'occhio.
-* 🧹 **Auto-Pulizia Cache all'Avvio**:
-  * Aggiunto un thread di pulizia silenziosa all'avvio che riduce a un maxim di 300 elementi le cartelle di cache di DSS e PanSTARRS, preservando lo spazio su disco.
+1. **Stima della magnitudine limite (magnitudine massima ottenuta)**: Algoritmo per determinare la sensibilità e la magnitudine limite raggiunta dallo scatto analizzando le stelle di catalogo rilevate.
+2. **Apertura di file non-FITS (TIFF/PNG/JPG)**: Supporto completo al caricamento di immagini in formato standard con persistenza automatica di WCS, metadati e annotazioni tramite un file sidecar JSON (`.info.json`).
+3. **Download dello sfondo di riferimento PanSTARRS**: Integrazione per scaricare tasselli reali d'archivio PanSTARRS (skycell) allineandoli automaticamente all'immagine FITS.
+4. **Ricerca dei transienti**: Interrogazione pubblica diretta del database TNS (Transient Name Server) per contrassegnare novae e supernovae con marker e scritte ad alta visibilità.
+5. **Eliminazione dei gradienti**: Strumento di rimozione e correzione del gradiente di luminosità dello sfondo cielo per uniformare il campo dell'immagine.
 
 ---
 
