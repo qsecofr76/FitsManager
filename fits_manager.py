@@ -5278,41 +5278,101 @@ class FitsManagerApp:
             messagebox.showerror("Error", "No solved WCS coordinates available to save.", parent=self.root)
             return
         if not self.fits_path:
-            messagebox.showerror("Error", "No FITS file path defined.", parent=self.root)
+            messagebox.showerror("Error", "No file path defined.", parent=self.root)
             return
-            
-        try:
-            from astropy.io import fits
-            with fits.open(self.fits_path, mode='update') as hdul:
-                header = hdul[0].header
-                for key in ['CRPIX1', 'CRPIX2', 'CRVAL1', 'CRVAL2', 
-                            'CD1_1', 'CD1_2', 'CD2_1', 'CD2_2', 
-                            'CDELT1', 'CDELT2', 'CTYPE1', 'CTYPE2',
-                            'CUNIT1', 'CUNIT2', 'RADECSYS', 'EQUINOX']:
-                    if key in header:
-                        del header[key]
-                
+
+        ext = os.path.splitext(self.fits_path)[1].lower()
+        is_fits = ext in ['.fits', '.fit']
+
+        if is_fits:
+            # --- Save WCS directly into the FITS header ---
+            try:
+                from astropy.io import fits
+                with fits.open(self.fits_path, mode='update') as hdul:
+                    header = hdul[0].header
+                    for key in ['CRPIX1', 'CRPIX2', 'CRVAL1', 'CRVAL2',
+                                'CD1_1', 'CD1_2', 'CD2_1', 'CD2_2',
+                                'CDELT1', 'CDELT2', 'CTYPE1', 'CTYPE2',
+                                'CUNIT1', 'CUNIT2', 'RADECSYS', 'EQUINOX']:
+                        if key in header:
+                            del header[key]
+
+                    for key, val in self.wcs.to_header().items():
+                        if any(k in key for k in ['CRPIX', 'CRVAL', 'CD', 'CTYPE', 'CUNIT', 'PC']):
+                            header[key] = val
+                    header['RADECSYS'] = 'ICRS'
+                    header['EQUINOX'] = 2000.0
+                    self.fits_header = header.copy()
+                    self.wcs_saved_to_disk = True
+
+                self.meta_tree.delete(*self.meta_tree.get_children())
+                important_keys = ["OBJECT", "EXPTIME", "TELESCOP", "INSTRUME", "FILTER", "DATE-OBS", "BAYERPAT", "EQUINOX"]
+                for key in important_keys:
+                    if key in self.fits_header:
+                        self.meta_tree.insert("", "end", text=key, values=(str(self.fits_header[key]),))
+                for key, val in self.fits_header.items():
+                    if key not in important_keys and key.strip() != "":
+                        self.meta_tree.insert("", "end", text=key, values=(str(val),))
+
+                messagebox.showinfo("Successo", "WCS salvato con successo nell'header del file FITS su disco!", parent=self.root)
+                self.btn_save_wcs_header.pack_forget()
+            except Exception as ex:
+                messagebox.showerror("Save Error", f"Impossibile salvare sul file FITS: {ex}", parent=self.root)
+
+        else:
+            # --- Save WCS + full header into sidecar .info.json ---
+            import json
+            sidecar_path = self.fits_path + ".info.json"
+            try:
+                # Build header dict from current fits_header + WCS keywords
+                header_dict = {}
+                for key, val in self.fits_header.items():
+                    if key.strip():
+                        try:
+                            header_dict[key] = float(val) if isinstance(val, (int, float)) else str(val)
+                        except Exception:
+                            header_dict[key] = str(val)
+
+                # Overwrite with freshly solved WCS keywords
                 for key, val in self.wcs.to_header().items():
-                    if any(k in key for k in ['CRPIX', 'CRVAL', 'CD', 'CTYPE', 'CUNIT', 'PC']):
-                        header[key] = val
-                header['RADECSYS'] = 'ICRS'
-                header['EQUINOX'] = 2000.0
-                self.fits_header = header.copy()
+                    if any(k in key for k in ['CRPIX', 'CRVAL', 'CD', 'CTYPE', 'CUNIT', 'PC', 'NAXIS']):
+                        try:
+                            header_dict[key] = float(val) if isinstance(val, (int, float)) else str(val)
+                        except Exception:
+                            header_dict[key] = str(val)
+                header_dict['RADECSYS'] = 'ICRS'
+                header_dict['EQUINOX'] = 2000.0
+
+                # Update in-memory header too
+                for key, val in header_dict.items():
+                    self.fits_header[key] = val
                 self.wcs_saved_to_disk = True
-                
-            self.meta_tree.delete(*self.meta_tree.get_children())
-            important_keys = ["OBJECT", "EXPTIME", "TELESCOP", "INSTRUME", "FILTER", "DATE-OBS", "BAYERPAT", "EQUINOX"]
-            for key in important_keys:
-                if key in self.fits_header:
-                    self.meta_tree.insert("", "end", text=key, values=(str(self.fits_header[key]),))
-            for key, val in self.fits_header.items():
-                if key not in important_keys and key.strip() != "":
-                    self.meta_tree.insert("", "end", text=key, values=(str(val),))
-                    
-            messagebox.showinfo("Successo", "WCS salvato con successo nell'header del file FITS su disco!", parent=self.root)
-            self.btn_save_wcs_header.pack_forget()
-        except Exception as ex:
-            messagebox.showerror("Save Error", f"Impossibile salvare sul file FITS: {ex}", parent=self.root)
+
+                # Read existing sidecar to preserve annotations
+                existing = {}
+                if os.path.exists(sidecar_path):
+                    try:
+                        with open(sidecar_path, "r", encoding="utf-8") as sf:
+                            existing = json.load(sf)
+                    except Exception:
+                        pass
+
+                existing["header"] = header_dict
+                if self.annotations:
+                    existing["annotations"] = self.annotations
+
+                with open(sidecar_path, "w", encoding="utf-8") as sf:
+                    json.dump(existing, sf, indent=2)
+
+                messagebox.showinfo(
+                    "Successo",
+                    f"WCS salvato nel file sidecar:\n{os.path.basename(sidecar_path)}\n\n"
+                    f"Al prossimo caricamento dell'immagine le coordinate WCS saranno automaticamente ricaricate.",
+                    parent=self.root
+                )
+                self.btn_save_wcs_header.pack_forget()
+            except Exception as ex:
+                messagebox.showerror("Save Error", f"Impossibile salvare il file sidecar JSON: {ex}", parent=self.root)
 
     def clear_annotations(self):
         self.push_state()
