@@ -6228,12 +6228,11 @@ class FitsManagerApp:
             radius_deg = center_coord.separation(corner_coord).deg
             radius_arcmin = radius_deg * 60.0
             radius_arcsec = radius_arcmin * 60.0
-            radius_arcsec = np.clip(radius_arcsec, 180.0, 18000.0)
+            radius_arcsec = np.clip(radius_arcsec, 180.0, 3600.0)
             
             obs_time = self.observation_time
             start_date = obs_time - datetime.timedelta(days=365)
             
-            url = "https://api.fink-portal.org/api/v1/conesearch"
             params = {
                 'ra': f"{center_coord.ra.deg:.6f}",
                 'dec': f"{center_coord.dec.deg:.6f}",
@@ -6241,15 +6240,34 @@ class FitsManagerApp:
             }
             
             payload = json.dumps(params).encode('utf-8')
-            req = urllib.request.Request(
-                url, 
-                data=payload,
-                headers={'Content-Type': 'application/json', 'User-Agent': 'Mozilla/5.0'}
-            )
             
+            # Try primary and fallback URLs to handle server-specific outages
+            urls = [
+                "https://api.lsst.fink-portal.org/api/v1/conesearch",
+                "https://api.fink-portal.org/api/v1/conesearch"
+            ]
+            
+            alerts = []
+            last_err = None
             ssl_context = ssl._create_unverified_context()
-            with urllib.request.urlopen(req, timeout=30, context=ssl_context) as response:
-                alerts = json.loads(response.read().decode('utf-8'))
+            
+            for url in urls:
+                try:
+                    req = urllib.request.Request(
+                        url, 
+                        data=payload,
+                        headers={'Content-Type': 'application/json', 'User-Agent': 'Mozilla/5.0'}
+                    )
+                    with urllib.request.urlopen(req, timeout=12, context=ssl_context) as response:
+                        alerts = json.loads(response.read().decode('utf-8'))
+                    last_err = None
+                    break
+                except Exception as e:
+                    last_err = e
+                    continue
+                    
+            if last_err is not None:
+                raise last_err
                 
             grouped = {}
             for alert in alerts:
