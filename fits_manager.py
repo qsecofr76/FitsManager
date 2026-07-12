@@ -4362,11 +4362,17 @@ class FitsManagerApp:
                 except Exception:
                     pass
             
-        init_focal = str(self.fits_header.get('FOCALLEN', ''))
+        init_focal = str(self.fits_header.get('FOCALLEN', '') or self.fits_header.get('FOCAL', ''))
         init_pixel = str(self.fits_header.get('XPIXSZ', self.fits_header.get('PIXSIZE', '')))
         
-        # Calculate optimal search radius based on image dimensions and pixel scale
-        init_radius = "50"
+        # Fallback to saved settings if header has no values
+        if not init_focal.strip() or init_focal.strip() in ('0', '0.0'):
+            init_focal = str(self.settings.get('focal_length', ''))
+        if not init_pixel.strip() or init_pixel.strip() in ('0', '0.0'):
+            init_pixel = str(self.settings.get('pixel_size', ''))
+        
+        # Default search radius from settings (will be recalculated if focal+pixel available)
+        init_radius = str(self.settings.get('solve_search_radius', '50'))
         try:
             focal_val = float(init_focal)
             pixel_val = float(init_pixel)
@@ -4473,6 +4479,11 @@ class FitsManagerApp:
                 return
                 
             dialog.destroy()
+            # Persist focal, pixel and radius to settings for future sessions
+            self.settings['focal_length'] = str(f_val)
+            self.settings['pixel_size'] = str(p_val)
+            self.settings['solve_search_radius'] = str(r_val)
+            self.save_settings()
             self.run_platesolve_vizier_astroalign(ra_s, dec_s, f_val, p_val, r_val)
             
         btn_solve = tk.Button(btn_frame, text="Solve Image", command=on_solve, bg="#10b981", fg="white", font=("Segoe UI", 10, "bold"), bd=0, padx=20, pady=6)
