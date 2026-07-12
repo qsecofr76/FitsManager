@@ -6161,6 +6161,62 @@ class FitsManagerApp:
             except Exception:
                 pass
 
+class TNSHTMLParser(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.results = []
+        self.current_row = {}
+        self.in_tbody = False
+        self.current_tag = None
+        self.current_class = None
+        self.current_data = []
+
+    def handle_starttag(self, tag, attrs):
+        attrs_dict = dict(attrs)
+        self.current_tag = tag
+        
+        if tag == 'tbody':
+            self.in_tbody = True
+            
+        if self.in_tbody:
+            if tag == 'tr':
+                cls = attrs_dict.get('class', '')
+                if 'atreps' in cls or 'spectra' in cls:
+                    return
+                self.current_row = {}
+            elif tag == 'td':
+                self.current_class = attrs_dict.get('class', '')
+                self.current_data = []
+
+    def handle_data(self, data):
+        if self.in_tbody and self.current_class:
+            self.current_data.append(data)
+
+    def handle_endtag(self, tag):
+        if tag == 'tbody':
+            self.in_tbody = False
+        elif self.in_tbody:
+            if tag == 'tr':
+                if self.current_row and 'name' in self.current_row:
+                    self.results.append(self.current_row)
+                    self.current_row = {}
+            elif tag == 'td':
+                if self.current_class:
+                    val = "".join(self.current_data).strip()
+                    if 'cell-name' in self.current_class:
+                        self.current_row['name'] = val
+                    elif 'cell-ra' in self.current_class:
+                        self.current_row['ra'] = val
+                    elif 'cell-decl' in self.current_class:
+                        self.current_row['dec'] = val
+                    elif 'cell-objtype_name' in self.current_class:
+                        self.current_row['type'] = val
+                    elif 'cell-discoverymag' in self.current_class:
+                        self.current_row['mag'] = val
+                    elif 'cell-discoverydate' in self.current_class:
+                        self.current_row['discovery_date'] = val
+                self.current_class = None
+
     def query_tns_transients(self):
         if self.fits_data is None:
             messagebox.showerror("Error", "Load an image first.", parent=self.root)
@@ -6200,14 +6256,14 @@ class FitsManagerApp:
                 self.observation_time = Time(time_str, format='isot')
                 self.fits_header['DATE-OBS'] = self.observation_time.isot
                 dialog.destroy()
-                self.execute_fink_query()
+                self.execute_tns_query()
             except Exception as ex:
                 messagebox.showerror("Error", f"Invalid observation date format:\n{ex}", parent=dialog)
                 
         btn_confirm = tk.Button(dialog, text="Confirm & Search", command=on_confirm, bg="#10b981", fg="white", font=("Segoe UI", 9, "bold"), bd=0, padx=15, pady=5)
         btn_confirm.pack(pady=10)
 
-    def execute_fink_query(self):
+    def execute_tns_query(self):
         from astropy.coordinates import SkyCoord
         import astropy.units as u
         from astropy.time import Time
@@ -6217,134 +6273,147 @@ class FitsManagerApp:
         import ssl
         import json
         
+        # Open a nice log/debug window
+        log_win = tk.Toplevel(self.root)
+        log_win.title("TNS Query Debug Log")
+        log_win.geometry("600x400")
+        log_win.configure(bg=self.panel_color)
+        log_win.transient(self.root)
+        
+        lbl = tk.Label(log_win, text="TNS Public Server Query Log", bg=self.panel_color, fg=self.text_color, font=("Segoe UI", 10, "bold"))
+        lbl.pack(pady=5)
+        
+        txt_log = tk.Text(log_win, bg=self.bg_color, fg=self.text_color, wrap="word", font=("Consolas", 9), bd=0, padx=10, pady=10)
+        txt_log.pack(fill="both", expand=True, padx=10, pady=5)
+        
+        def append_log(msg):
+            txt_log.insert(tk.END, msg + "\n")
+            txt_log.see(tk.END)
+            self.root.update()
+            
         self.root.config(cursor="watch")
         self.root.update()
         
-        try:
-            h_orig, w_orig = self.debayered_cache.shape[:2]
-            center_coord = self.wcs.pixel_to_world(w_orig / 2.0, h_orig / 2.0)
-            
-            corner_coord = self.wcs.pixel_to_world(0, 0)
-            radius_deg = center_coord.separation(corner_coord).deg
-            radius_arcmin = radius_deg * 60.0
-            radius_arcsec = radius_arcmin * 60.0
-            radius_arcsec = np.clip(radius_arcsec, 180.0, 18000.0)
-            
-            obs_time = self.observation_time
-            start_date = obs_time - datetime.timedelta(days=365)
-            
-            params = {
-                'ra': f"{center_coord.ra.deg:.6f}",
-                'dec': f"{center_coord.dec.deg:.6f}",
-                'radius': f"{radius_arcsec:.2f}"
-            }
-            
-            payload = json.dumps(params).encode('utf-8')
-            
-            # Try primary and fallback URLs to handle server-specific outages
-            urls = [
-                "https://api.lsst.fink-portal.org/api/v1/conesearch",
-                "https://api.fink-portal.org/api/v1/conesearch"
-            ]
-            
-            alerts = []
-            last_err = None
-            ssl_context = ssl._create_unverified_context()
-            
-            for url in urls:
-                try:
-                    req = urllib.request.Request(
-                        url, 
-                        data=payload,
-                        headers={'Content-Type': 'application/json', 'User-Agent': 'Mozilla/5.0'}
-                    )
-                    with urllib.request.urlopen(req, timeout=12, context=ssl_context) as response:
-                        alerts = json.loads(response.read().decode('utf-8'))
-                    last_err = None
-                    break
-                except Exception as e:
-                    last_err = e
-                    continue
-                    
-            if last_err is not None:
-                raise last_err
+        def run_query():
+            try:
+                h_orig, w_orig = self.debayered_cache.shape[:2]
+                center_coord = self.wcs.pixel_to_world(w_orig / 2.0, h_orig / 2.0)
                 
-            grouped = {}
-            for alert in alerts:
-                obj_id = alert.get('i:objectId')
-                tns_name = alert.get('d:tns')
-                key = tns_name if tns_name else obj_id
-                if not key:
-                    continue
-                    
-                if key not in grouped:
-                    grouped[key] = []
-                grouped[key].append(alert)
+                corner_coord = self.wcs.pixel_to_world(0, 0)
+                radius_deg = center_coord.separation(corner_coord).deg
+                radius_arcmin = radius_deg * 60.0
+                # Fink / TNS coordinates query uses arcminutes
+                radius_arcmin = np.clip(radius_arcmin, 3.0, 300.0)
                 
-            self.transient_objects = []
-            before_count = 0
-            after_count = 0
-            
-            for key, obj_alerts in grouped.items():
-                disc_alert = min(obj_alerts, key=lambda x: x.get('i:jd', 9999999.0))
+                append_log(f"[INFO] Image Center: RA={center_coord.ra.deg:.6f}, DEC={center_coord.dec.deg:.6f}")
+                append_log(f"[INFO] Image Radius: {radius_arcmin:.2f} arcminutes")
                 
-                try:
-                    jd = disc_alert.get('i:jd')
-                    if not jd:
-                        continue
-                    disc_time = Time(jd, format='jd')
+                coord_sky = SkyCoord(ra=center_coord.ra.deg*u.deg, dec=center_coord.dec.deg*u.deg, frame='icrs')
+                ra_hms = coord_sky.ra.to_string(unit=u.hour, sep=":", precision=2)
+                dec_dms = coord_sky.dec.to_string(unit=u.degree, sep=":", precision=2, alwayssign=True)
+                
+                append_log(f"[INFO] Converted to sexagesimal: RA={ra_hms}, DEC={dec_dms}")
+                
+                obs_time = self.observation_time
+                start_date = obs_time - datetime.timedelta(days=365)
+                append_log(f"[INFO] Observation Time (Shot): {obs_time.iso}")
+                append_log(f"[INFO] Filtering transients discovered after: {start_date.iso.split()[0]}")
+                
+                params = {
+                    'ra': ra_hms,
+                    'decl': dec_dms,
+                    'radius': f"{radius_arcmin:.2f}",
+                    'coords_unit': 'arcmin',
+                    'op': 'Submit',
+                    'form_id': 'SearchObject'
+                }
+                
+                query_str = urllib.parse.urlencode(params)
+                url = f"https://www.wis-tns.org/search?{query_str}"
+                
+                append_log(f"[HTTP GET] Querying public URL:\n{url}\n")
+                
+                req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+                ssl_context = ssl._create_unverified_context()
+                
+                with urllib.request.urlopen(req, timeout=20, context=ssl_context) as response:
+                    html_content = response.read().decode('utf-8')
                     
-                    if disc_time < start_date:
+                append_log(f"[HTTP SUCCESS] Received response of length: {len(html_content)} bytes")
+                
+                parser = TNSHTMLParser()
+                parser.feed(html_content)
+                
+                append_log(f"[PARSER] Raw objects parsed: {len(parser.results)}")
+                
+                self.transient_objects = []
+                before_count = 0
+                after_count = 0
+                
+                for obj in parser.results:
+                    name = obj.get('name', '')
+                    ra_str = obj.get('ra', '')
+                    dec_str = obj.get('dec', '')
+                    disc_date_str = obj.get('discovery_date', '')
+                    mag_str = obj.get('mag', '')
+                    obj_type = obj.get('type', '')
+                    
+                    if not name.startswith(('SN ', 'AT ')) or not ra_str or not dec_str or not disc_date_str:
                         continue
                         
-                    if disc_time > obs_time:
-                        color = "#ef4444"
-                        after_count += 1
-                    else:
-                        color = "#10b981"
-                        before_count += 1
-                        
-                    ra = disc_alert.get('i:ra')
-                    dec = disc_alert.get('i:dec')
-                    mag = disc_alert.get('i:magpsf')
-                    classification = disc_alert.get('v:classification', '')
+                    append_log(f"[FOUND] {name} ({obj_type}) Mag: {mag_str} Disc: {disc_date_str}")
                     
-                    is_candidate = any(w in classification.lower() for w in ['sn', 'supernova', 'nova', 'cv', 'transient'])
-                    if not disc_alert.get('d:tns') and not is_candidate:
+                    try:
+                        obj_coord = SkyCoord(ra=ra_str, dec=dec_str, unit=(u.hourangle, u.deg), frame='icrs')
+                        obj_ra = obj_coord.ra.deg
+                        obj_dec = obj_coord.dec.deg
+                        
+                        disc_time = Time(disc_date_str.replace(' ', 'T'), format='isot')
+                        
+                        if disc_time < start_date:
+                            append_log(f"   -> Skipped: discovered before start window (older than 12 months)")
+                            continue
+                            
+                        if disc_time > obs_time:
+                            color = "#ef4444"  # Red
+                            after_count += 1
+                            append_log(f"   -> Match: Discovered AFTER shot (Red)")
+                        else:
+                            color = "#10b981"  # Green
+                            before_count += 1
+                            append_log(f"   -> Match: Discovered BEFORE/ON shot (Green)")
+                            
+                        self.transient_objects.append({
+                            'name': name,
+                            'ra': obj_ra,
+                            'dec': obj_dec,
+                            'discovery_date': disc_date_str,
+                            'mag': mag_str,
+                            'type': obj_type,
+                            'color': color
+                        })
+                    except Exception as parse_ex:
+                        append_log(f"   -> Error parsing coordinates/time: {parse_ex}")
                         continue
                         
-                    date_str = disc_time.iso.split()[0]
-                    
-                    name = disc_alert.get('d:tns')
-                    if not name:
-                        name = f"ZTF {disc_alert.get('i:objectId')}"
-                        
-                    self.transient_objects.append({
-                        'name': name,
-                        'ra': float(ra),
-                        'dec': float(dec),
-                        'discovery_date': date_str,
-                        'mag': f"{mag:.1f}" if mag else "N/A",
-                        'type': classification,
-                        'color': color
-                    })
-                except Exception:
-                    continue
-                    
-            self.render_canvas(is_dragging=False)
-            messagebox.showinfo(
-                "Fink Broker Search Success",
-                f"Query completed successfully using Fink public database!\n\n"
-                f"Transients found: {len(self.transient_objects)}\n"
-                f"- Discovered before/on shot (Green): {before_count}\n"
-                f"- Discovered after shot (Red): {after_count}\n\n"
-                f"Transients are marked with colored squares.",
-                parent=self.root
-            )
-        except Exception as e:
-            messagebox.showerror("Fink Search Error", f"Failed to retrieve transients from Fink Broker:\n{e}", parent=self.root)
-        finally:
-            self.root.config(cursor="")
+                append_log(f"\n[SUMMARY] Stored {len(self.transient_objects)} transients inside image field.")
+                self.render_canvas(is_dragging=False)
+                
+                messagebox.showinfo(
+                    "TNS Search Success",
+                    f"Query completed successfully using TNS public database!\n\n"
+                    f"Transients found: {len(self.transient_objects)}\n"
+                    f"- Discovered before/on shot (Green): {before_count}\n"
+                    f"- Discovered after shot (Red): {after_count}",
+                    parent=log_win
+                )
+            except Exception as e:
+                append_log(f"\n[ERROR] Query failed: {e}")
+                messagebox.showerror("TNS Search Error", f"Failed to retrieve transients from TNS:\n{e}", parent=log_win)
+            finally:
+                self.root.config(cursor="")
+                
+        log_win.after(200, run_query)
 
     def reset_sliders(self):
         self.slider_red_offset.set(0)
