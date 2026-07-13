@@ -6340,7 +6340,7 @@ class FitsManagerApp:
             try:
                 files = []
                 for entry in os.scandir(cache_dir):
-                    if entry.is_file() and entry.name.endswith(".fits"):
+                    if entry.is_file() and entry.name.lower().endswith(('.fits', '.fit', '.jpg', '.jpeg', '.png')):
                         files.append((entry.path, entry.stat().st_mtime))
                 
                 if len(files) > 300:
@@ -6348,10 +6348,25 @@ class FitsManagerApp:
                     files.sort(key=lambda x: x[1])
                     excess = len(files) - 300
                     for i in range(excess):
+                        file_path = files[i][0]
                         try:
-                            os.remove(files[i][0])
+                            os.remove(file_path)
+                            # Also delete corresponding .info.json sidecar if it exists
+                            sidecar = file_path + ".info.json"
+                            if os.path.exists(sidecar):
+                                os.remove(sidecar)
                         except Exception:
                             pass
+                            
+                # Sweep away orphaned .info.json sidecar files
+                for entry in os.scandir(cache_dir):
+                    if entry.is_file() and entry.name.lower().endswith('.info.json'):
+                        img_path = entry.path[:-10]  # Strip '.info.json' (which is 10 characters long)
+                        if not os.path.exists(img_path):
+                            try:
+                                os.remove(entry.path)
+                            except Exception:
+                                pass
             except Exception:
                 pass
 from html.parser import HTMLParser
