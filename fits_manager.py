@@ -1061,11 +1061,23 @@ class FitsManagerApp:
             self.render_canvas(is_dragging=False)
 
     def handle_file_drop(self, event):
-        file_path = event.data
-        if file_path.startswith("{") and file_path.endswith("}"):
-            file_path = file_path[1:-1]
-        if os.path.exists(file_path):
-            self.load_fits_from_path(file_path)
+        if not event.data:
+            return
+        try:
+            # Tkinter DnD event data is a Tcl list; splitlist parses it robustly
+            files = self.root.tk.splitlist(event.data)
+            if files:
+                file_path = os.path.normpath(files[0])
+                if os.path.exists(file_path):
+                    self.load_fits_from_path(file_path)
+        except Exception:
+            # Fallback to manual parsing if splitlist fails
+            file_path = event.data.strip()
+            if file_path.startswith("{") and file_path.endswith("}"):
+                file_path = file_path[1:-1].strip()
+            file_path = os.path.normpath(file_path)
+            if os.path.exists(file_path):
+                self.load_fits_from_path(file_path)
             
     def load_fits(self):
         file_path = filedialog.askopenfilename(filetypes=[
