@@ -621,6 +621,12 @@ class FitsManagerApp:
         # Register Drag & Drop
         self.root.drop_target_register(DND_FILES)
         self.root.dnd_bind("<<Drop>>", self.handle_file_drop)
+        self.root.dnd_bind("<<DragEnter>>", lambda e: print(f"[DnD Debug] DragEnter on ROOT. raw data: {repr(e.data)}"))
+        
+        if hasattr(self, 'canvas') and self.canvas:
+            self.canvas.drop_target_register(DND_FILES)
+            self.canvas.dnd_bind("<<Drop>>", self.handle_file_drop)
+            self.canvas.dnd_bind("<<DragEnter>>", lambda e: print(f"[DnD Debug] DragEnter on CANVAS. raw data: {repr(e.data)}"))
         
     def create_widgets(self):
         # 1. Create Top Menu Bar
@@ -1063,21 +1069,19 @@ class FitsManagerApp:
     def handle_file_drop(self, event):
         if not event.data:
             return
-        try:
-            # Tkinter DnD event data is a Tcl list; splitlist parses it robustly
-            files = self.root.tk.splitlist(event.data)
-            if files:
-                file_path = os.path.normpath(files[0])
-                if os.path.exists(file_path):
-                    self.load_fits_from_path(file_path)
-        except Exception:
-            # Fallback to manual parsing if splitlist fails
-            file_path = event.data.strip()
-            if file_path.startswith("{") and file_path.endswith("}"):
-                file_path = file_path[1:-1].strip()
-            file_path = os.path.normpath(file_path)
-            if os.path.exists(file_path):
+            
+        file_path = event.data.strip()
+        if file_path.startswith("{") and file_path.endswith("}"):
+            file_path = file_path[1:-1].strip()
+            
+        file_path = os.path.normpath(file_path)
+        if os.path.exists(file_path):
+            print(f"[DnD] Dropped file: {file_path}")
+            try:
                 self.load_fits_from_path(file_path)
+            except Exception as e:
+                import traceback
+                print(f"[ERROR] Failed to load dropped file:\n{traceback.format_exc()}")
             
     def load_fits(self):
         file_path = filedialog.askopenfilename(filetypes=[
