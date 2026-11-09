@@ -2055,7 +2055,7 @@ class FitsManagerApp:
                 if self.temp_marker.get('type') == 'gaia_query':
                     r = 10
                     draw.rectangle([tx - r, ty - r, tx + r, ty + r], outline=self.green_bright, width=2)
-                    draw.text((tx + 15, ty - 8), "Gaia Query Target", fill=self.green_bright, font=font_std)
+                    draw.text((tx + 15, ty - 8), "Click Point", fill=self.green_bright, font=font_std)
                     
                     if self.temp_marker.get('catalog_ratio_x') is not None:
                         cx_px = self.temp_marker['catalog_ratio_x'] * w_orig
@@ -2063,10 +2063,21 @@ class FitsManagerApp:
                         cx_c, cy_c = map_coords(cx_px, cy_px)
                         
                         if 0 <= cx_c < crop_new_w and 0 <= cy_c < crop_new_h:
-                            size = 6
+                            size = 7
                             draw.line([cx_c - size, cy_c - size, cx_c + size, cy_c + size], fill="#ef4444", width=2)
                             draw.line([cx_c - size, cy_c + size, cx_c + size, cy_c - size], fill="#ef4444", width=2)
-                            draw.text((cx_c + 8, cy_c - 8), "Gaia Star Position", fill="#ef4444", font=font_std)
+                            draw.text((cx_c + 10, cy_c - 8), "Gaia Star", fill="#ef4444", font=font_std)
+                    
+                    if self.temp_marker.get('ned_ratio_x') is not None:
+                        nx_px = self.temp_marker['ned_ratio_x'] * w_orig
+                        ny_px = self.temp_marker['ned_ratio_y'] * h_orig
+                        nx_c, ny_c = map_coords(nx_px, ny_px)
+                        
+                        if 0 <= nx_c < crop_new_w and 0 <= ny_c < crop_new_h:
+                            rc = 12
+                            draw.ellipse([nx_c - rc, ny_c - rc, nx_c + rc, ny_c + rc], outline="#38bdf8", width=2)
+                            ned_lbl = self.temp_marker.get('ned_name', 'Galaxy')
+                            draw.text((nx_c + 15, ny_c - 8), f"NED: {ned_lbl}", fill="#38bdf8", font=font_std)
                 else:
                     self.draw_star_crosshair(draw, tx, ty, size=32, width=2)
                     draw.text((tx + 34, ty + 34), f"Target: RA={self.temp_marker['ra']}\nDEC={self.temp_marker['dec']}", fill="#f43f5e", font=font_std)
@@ -2739,21 +2750,49 @@ class FitsManagerApp:
                 tx, ty = map_coords_export(px, py)
                 
                 if 0 <= tx < w and 0 <= ty < h:
-                    temp_cross_size = int(cross_size * 1.2)
-                    temp_cross_width = max(2, int(temp_cross_size * 0.06))
-                    self.draw_star_crosshair(draw, tx, ty, size=temp_cross_size, width=temp_cross_width)
-                    
-                    text_offset_x = int(temp_cross_size * 0.6)
-                    text_offset_y = int(temp_cross_size * 0.6)
-                    
-                    text_content = f"Target: RA={self.temp_marker['ra']}\nDEC={self.temp_marker['dec']}"
-                    
-                    if font:
-                        draw.text((tx + text_offset_x, ty + text_offset_y), text_content, fill=self.green_bright, font=font)
+                    if self.temp_marker.get('type') == 'gaia_query':
+                        r = int(cross_size * 0.5)
+                        draw.rectangle([tx - r, ty - r, tx + r, ty + r], outline=self.green_bright, width=max(2, int(r * 0.2)))
+                        if font:
+                            draw.text((tx + r + 6, ty - 8), "Click Point", fill=self.green_bright, font=font)
+                        
+                        if self.temp_marker.get('catalog_ratio_x') is not None:
+                            cx_px = self.temp_marker['catalog_ratio_x'] * w_orig
+                            cy_px = self.temp_marker['catalog_ratio_y'] * h_orig
+                            cx_c, cy_c = map_coords_export(cx_px, cy_px)
+                            if 0 <= cx_c < w and 0 <= cy_c < h:
+                                size = int(cross_size * 0.5)
+                                draw.line([cx_c - size, cy_c - size, cx_c + size, cy_c + size], fill="#ef4444", width=max(2, int(size * 0.2)))
+                                draw.line([cx_c - size, cy_c + size, cx_c + size, cy_c - size], fill="#ef4444", width=max(2, int(size * 0.2)))
+                                if font:
+                                    draw.text((cx_c + size + 6, cy_c - 8), "Gaia Star", fill="#ef4444", font=font)
+                        
+                        if self.temp_marker.get('ned_ratio_x') is not None:
+                            nx_px = self.temp_marker['ned_ratio_x'] * w_orig
+                            ny_px = self.temp_marker['ned_ratio_y'] * h_orig
+                            nx_c, ny_c = map_coords_export(nx_px, ny_px)
+                            if 0 <= nx_c < w and 0 <= ny_c < h:
+                                rc = int(cross_size * 0.7)
+                                draw.ellipse([nx_c - rc, ny_c - rc, nx_c + rc, ny_c + rc], outline="#38bdf8", width=max(2, int(rc * 0.15)))
+                                ned_lbl = self.temp_marker.get('ned_name', 'Galaxy')
+                                if font:
+                                    draw.text((nx_c + rc + 6, ny_c - 8), f"NED: {ned_lbl}", fill="#38bdf8", font=font)
                     else:
-                        for dx in range(-1, 2):
-                            for dy in range(-1, 2):
-                                draw.text((tx + text_offset_x + dx, ty + text_offset_y + dy), text_content, fill=self.green_bright)
+                        temp_cross_size = int(cross_size * 1.2)
+                        temp_cross_width = max(2, int(temp_cross_size * 0.06))
+                        self.draw_star_crosshair(draw, tx, ty, size=temp_cross_size, width=temp_cross_width)
+                        
+                        text_offset_x = int(temp_cross_size * 0.6)
+                        text_offset_y = int(temp_cross_size * 0.6)
+                        
+                        text_content = f"Target: RA={self.temp_marker['ra']}\nDEC={self.temp_marker['dec']}"
+                        
+                        if font:
+                            draw.text((tx + text_offset_x, ty + text_offset_y), text_content, fill=self.green_bright, font=font)
+                        else:
+                            for dx in range(-1, 2):
+                                for dy in range(-1, 2):
+                                    draw.text((tx + text_offset_x + dx, ty + text_offset_y + dy), text_content, fill=self.green_bright)
                     
             pil_export.save(file_path)
             messagebox.showinfo("Success", f"Image exported successfully to:\n{file_path}")
@@ -6424,65 +6463,130 @@ class FitsManagerApp:
                 # Check directly with NED API for identified extragalactic objects
                 ned_match = None
                 try:
-                    ned_api_url = f"https://ned.ipac.caltech.edu/NED::API/ConeSearchByPosition?RA={cat_ra:.6f}d&DEC={cat_dec:.6f}d&RADIUS=0.5"
+                    # Optimized search radius (0.35 arcmin = 21 arcsec) for fast response (<3s) avoiding timeout
+                    ned_api_url = f"https://ned.ipac.caltech.edu/NED::API/ConeSearchByPosition?RA={ra_deg:.6f}d&DEC={dec_deg:.6f}d&RADIUS=0.35"
                     req_ned = urllib.request.Request(ned_api_url, headers={'User-Agent': 'Mozilla/5.0'})
-                    with urllib.request.urlopen(req_ned, timeout=5, context=ssl_context) as r_ned:
+                    with urllib.request.urlopen(req_ned, timeout=10, context=ssl_context) as r_ned:
                         ned_xml = r_ned.read().decode('utf-8')
                     root_ned = ET.fromstring(ned_xml)
                     ns_ned = {'v': 'http://www.ivoa.net/xml/VOTable/v1.3'}
                     f_names = [f.attrib.get('name') for f in root_ned.findall('.//v:FIELD', ns_ned)]
                     r_rows = root_ned.findall('.//v:TR', ns_ned)
-                    if r_rows:
-                        tds_ned = [td.text for td in r_rows[0].findall('v:TD', ns_ned)]
+                    
+                    ned_candidates = []
+                    for r_row in r_rows:
+                        tds_ned = [td.text for td in r_row.findall('v:TD', ns_ned)]
                         d_ned = dict(zip(f_names, tds_ned))
-                        sep_arcsec = float(d_ned.get('Separation', 0)) * 3600.0
-                        if sep_arcsec <= 45.0:
-                            ned_match = {
-                                'name': d_ned.get('Object Name'),
-                                'type': d_ned.get('Phys Type', 'Galaxy'),
-                                'z': d_ned.get('Redshift (z)'),
-                                'cz': d_ned.get('cz'),
-                                'sep': sep_arcsec
-                            }
+                        n_name = d_ned.get('Object Name', '')
+                        n_type = d_ned.get('Phys Type', '') or ''
+                        n_z = d_ned.get('Redshift (z)')
+                        n_cz = d_ned.get('cz')
+                        try:
+                            # Separation in NED cone search is in arcminutes
+                            n_sep_arcsec = float(d_ned.get('Separation', 0)) * 60.0
+                            n_ra = float(d_ned.get('RA'))
+                            n_dec = float(d_ned.get('Dec'))
+                        except (ValueError, TypeError):
+                            continue
+                        
+                        # Strict scientific criteria for true extragalactic objects:
+                        # 1. Explicit galaxy/quasar physical classification in NED
+                        # 2. Measured cosmological redshift z > 0
+                        # 3. Known historical galaxy catalog prefix
+                        # Exclude generic infrared point sources (IrS / WISEA / 2MASS) without redshift!
+                        has_redshift = False
+                        if n_z and n_z != 'None':
+                            try:
+                                if float(n_z) > 0.0001:
+                                    has_redshift = True
+                            except ValueError:
+                                pass
+                        
+                        is_galaxy_type = n_type in ['G', 'GPair', 'GTrpl', 'GGroup', 'QSO', 'QGroup', 'RadioS', 'SN', 'PN']
+                        is_galaxy_cat = any(n_name.startswith(p) for p in ['NGC', 'IC', 'UGC', 'MCG', 'ESO', 'CGCG', 'LEDA', 'PGC', '2MASX', 'Mrk', 'ARP', 'SDSS J'])
+                        
+                        is_true_extragalactic = is_galaxy_type or has_redshift or is_galaxy_cat
+                        
+                        if is_true_extragalactic and n_sep_arcsec <= 45.0:
+                            p_type_label = n_type if (n_type and n_type != 'None') else ('Galaxy' if (is_galaxy_cat or has_redshift) else 'Extragalactic')
+                            ned_candidates.append({
+                                'name': n_name,
+                                'type': p_type_label,
+                                'z': n_z if has_redshift else None,
+                                'cz': n_cz if has_redshift else None,
+                                'sep': n_sep_arcsec,
+                                'ra': n_ra,
+                                'dec': n_dec,
+                                'is_confirmed': True
+                            })
+                    
+                    if ned_candidates:
+                        # Prioritize closest confirmed galaxy
+                        ned_candidates.sort(key=lambda x: x['sep'])
+                        best_ned = ned_candidates[0]
+                        ned_match = best_ned
+                        
+                        # Project NED galaxy position onto FITS coordinates
+                        try:
+                            n_px, n_py = self.wcs.world_to_pixel(SkyCoord(best_ned['ra'], best_ned['dec'], unit='deg', frame='icrs'))
+                            n_px = float(np.atleast_1d(n_px)[0])
+                            n_py = float(np.atleast_1d(n_py)[0])
+                            self.temp_marker['ned_ratio_x'] = n_px / w_orig
+                            self.temp_marker['ned_ratio_y'] = n_py / h_orig
+                            self.temp_marker['ned_name'] = best_ned['name']
+                        except Exception:
+                            pass
                 except Exception:
                     pass
 
-                if ned_match:
-                    report.append(f"NED Extragalactic: {ned_match['name']} ({ned_match['type']})")
+                # Synthesize classification combining Gaia DR3 astrophysical model and NED
+                prob_star = star_data.get('classprob_star')
+                prob_gal = star_data.get('classprob_galaxy')
+                prob_qso = star_data.get('classprob_qso')
+                
+                # Check Gaia DSC probabilities
+                p_s = float(prob_star) * 100.0 if prob_star else 0.0
+                p_g = float(prob_gal) * 100.0 if prob_gal else 0.0
+                p_q = float(prob_qso) * 100.0 if prob_qso else 0.0
+                
+                pm_ra = float(star_data.get('pmRA', 0) or 0)
+                pm_de = float(star_data.get('pmDE', 0) or 0)
+                tot_pm = (pm_ra**2 + pm_de**2)**0.5
+                
+                # If NED found a galaxy nearby (or click is within 5 arcsec)
+                if ned_match and (ned_match['sep'] <= 5.0 or p_g > 50.0) and p_s < 90.0:
+                    report.append(f"Object Nature   : CONFIRMED EXTRAGALACTIC GALAXY ({ned_match['name']})")
+                    report.append(f"NED Classification: {ned_match['name']} ({ned_match['type']})")
                     if ned_match.get('z'):
                         report.append(f"Redshift (z)    : {ned_match['z']} (cz = {float(ned_match.get('cz', 0)):.1f} km/s)")
-                    report.append(f"NED Match Offset: {ned_match['sep']:.1f} arcsec from click")
-                    report.append("Object Nature   : CONFIRMED EXTRAGALACTIC GALAXY / OBJECT (NASA NED)")
-                else:
-                    prob_star = star_data.get('classprob_star')
-                    prob_gal = star_data.get('classprob_galaxy')
-                    prob_qso = star_data.get('classprob_qso')
-                    
-                    obj_nature = "Point Source (Probable Star)"
-                    if prob_gal and prob_star:
-                        try:
-                            p_s = float(prob_star) * 100.0
-                            p_g = float(prob_gal) * 100.0
-                            p_q = float(prob_qso) * 100.0 if prob_qso else 0.0
-                            if p_g > 50.0:
-                                obj_nature = f"EXTRAGALACTIC / GALAXY ({p_g:.1f}% confidence)"
-                            elif p_q > 50.0:
-                                obj_nature = f"QUASAR / AGN ({p_q:.1f}% confidence)"
-                            else:
-                                obj_nature = f"GALACTIC STAR ({p_s:.1f}% confidence)"
-                            report.append(f"Gaia DSC Model  : {obj_nature}")
-                            report.append(f"Probabilities   : Star {p_s:.1f}% | Galaxy {p_g:.1f}% | Quasar {p_q:.1f}%")
-                        except Exception:
-                            report.append(f"Object Nature   : {obj_nature}")
+                    report.append(f"Separation      : {ned_match['sep']:.2f} arcsec from click (marked with blue circle)")
+                elif ned_match:
+                    if p_s >= 50.0:
+                        report.append(f"Object Nature   : GALACTIC STAR ({p_s:.1f}% confidence Gaia DSC)")
+                    elif tot_pm > 1.5:
+                        report.append(f"Object Nature   : Galactic Star (High Proper Motion: {tot_pm:.2f} mas/yr)")
                     else:
-                        # Heuristic check from astrometric motion/parallax
-                        pm_ra = float(star_data.get('pmRA', 0) or 0)
-                        pm_de = float(star_data.get('pmDE', 0) or 0)
-                        tot_pm = (pm_ra**2 + pm_de**2)**0.5
-                        if tot_pm > 2.0:
-                            report.append(f"Object Nature   : Galactic Star (High Proper Motion: {tot_pm:.2f} mas/yr)")
-                        else:
-                            report.append("Object Nature   : Stellar point source (or unresolved compact object)")
+                        report.append("Object Nature   : Stellar Point Source (Milky Way)")
+                    if prob_star and prob_gal:
+                        report.append(f"Gaia DSC Prob   : Star {p_s:.1f}% | Galaxy {p_g:.1f}% | Quasar {p_q:.1f}%")
+                    report.append("")
+                    report.append(f"Nearby NED Galaxy: {ned_match['name']} ({ned_match['type']})")
+                    if ned_match.get('z'):
+                        report.append(f"Galaxy Redshift : z = {ned_match['z']} (cz = {float(ned_match.get('cz', 0)):.1f} km/s)")
+                    report.append(f"Galaxy Offset   : {ned_match['sep']:.1f} arcsec from click (marked with blue circle)")
+                else:
+                    # No NED galaxy returned (or timed out) - rely on Gaia DSC
+                    if p_g > 50.0:
+                        report.append(f"Object Nature   : EXTRAGALACTIC / GALAXY ({p_g:.1f}% confidence Gaia DSC)")
+                    elif p_s >= 50.0:
+                        report.append(f"Object Nature   : GALACTIC STAR ({p_s:.1f}% confidence Gaia DSC)")
+                    elif tot_pm > 1.5:
+                        report.append(f"Object Nature   : Galactic Star (High Proper Motion: {tot_pm:.2f} mas/yr)")
+                    else:
+                        report.append("Object Nature   : Stellar Point Source (Milky Way)")
+                        
+                    if prob_star and prob_gal:
+                        report.append(f"Gaia DSC Prob   : Star {p_s:.1f}% | Galaxy {p_g:.1f}% | Quasar {p_q:.1f}%")
                 report.append("")
                 
                 report.append("--- Photometric Magnitudes ---")
