@@ -7,7 +7,6 @@ from PIL import Image, ImageTk, ImageDraw
 from astropy.io import fits
 from astropy.wcs import WCS
 from tkinterdnd2 import DND_FILES, TkinterDnD
-from scipy.interpolate import PchipInterpolator
 from astropy.coordinates import SkyCoord, FK5
 import astropy.units as u
 from astropy.time import Time
@@ -259,6 +258,7 @@ class CurvesWidget(tk.Canvas):
             
         if len(xs) > 2:
             try:
+                from scipy.interpolate import PchipInterpolator
                 interp = PchipInterpolator(xs, ys)
                 lut = interp(np.arange(256))
             except Exception:
@@ -4212,6 +4212,11 @@ class FitsManagerApp:
                     dss_header = hdul[0].header
                     wcs_obj = WCS(dss_header, naxis=2)
                 
+                # Check for completely blank / empty data (out of survey footprint)
+                if np.count_nonzero(raw_data) == 0 or np.nanmax(raw_data) <= 0.0:
+                    log_msg(f"[WARN] Tile has no image data (outside survey footprint): {os.path.basename(file_path)}")
+                    return
+                
                 # If multi-band (3, H, W) compute weighted luminance
                 if raw_data.ndim == 3 and raw_data.shape[0] == 3:
                     dss_data = 0.25 * raw_data[0] + 0.50 * raw_data[1] + 0.25 * raw_data[2]
@@ -4288,8 +4293,17 @@ class FitsManagerApp:
 
         def finish_all_done():
             self.root.config(cursor="")
-            log_msg("[SUCCESS] All Legacy Survey tiles retrieved and merged!")
-            messagebox.showinfo("Legacy Survey Sky", "Successfully loaded Legacy Survey (DESI DR10) reference sky.\nAdjust 'DSS Sky Blend' slider below to crossfade.", parent=self.root)
+            if not self.loaded_dss_tiles:
+                log_msg("[WARN] No valid Legacy Survey coverage for this sky field.")
+                messagebox.showwarning(
+                    "Legacy Survey Sky",
+                    "This celestial field (e.g. Galactic Plane or outside DESI footprint) is not covered by Legacy Survey.\n\n"
+                    "Tip: Please use 'PanStarrs' or 'DSS' background for this target.",
+                    parent=self.root
+                )
+            else:
+                log_msg(f"[SUCCESS] {len(self.loaded_dss_tiles)} Legacy Survey tile(s) retrieved and merged!")
+                messagebox.showinfo("Legacy Survey Sky", f"Successfully loaded {len(self.loaded_dss_tiles)} Legacy Survey tile(s).\nAdjust 'DSS Sky Blend' slider below to crossfade.", parent=self.root)
 
         def finish_error(err):
             self.root.config(cursor="")
@@ -4385,47 +4399,63 @@ class FitsManagerApp:
                     # Request 1024x1024 pixel cutout covering ~25 arcmin (pixscale ~1.46 arcsec/px)
                     size_px = 1024
                     pixscale = (tile_size_arcmin * 60.0) / float(size_px)
-                    url = f"https://www.legacysurvey.org/viewer/fits-cutout?ra={tile_ra:.6f}&dec={tile_dec:.6f}&layer=ls-dr10&pixscale={pixscale:.3f}&size={size_px}&bands=r"
-                    log_msg(f"[QUERY] Fetching FITS cutout from Legacy Survey (DR10)...")
                     
-                    req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-                    with urllib.request.urlopen(req, timeout=30, context=ssl_context) as resp:
-                        content_length = resp.headers.get('Content-Length')
-                        total_bytes = int(content_length) if content_length else 0
-                        if total_bytes:
-                            log_msg(f"[INFO] Payload size: {total_bytes / 1024.0 / 1024.0:.2f} MB")
-                            set_progress(0, total_bytes)
-                        else:
-                            set_progress(0, 100)
-                            
-                        img_data = bytearray()
-                        downloaded_bytes = 0
-                        chunk_size = 65536
-                        last_log_time = 0
-                        
-                        while True:
-                            if self.dss_download_cancelled:
-                                raise Exception("Download cancelled by user.")
-                            chunk = resp.read(chunk_size)
-                            if not chunk:
-                                break
-                            img_data.extend(chunk)
-                            downloaded_bytes += len(chunk)
-                            
-                            if total_bytes:
-                                set_progress(downloaded_bytes, total_bytes)
-                                import time
-                                current_time = time.time()
-                                if current_time - last_log_time > 1.5 or downloaded_bytes == total_bytes:
-                                    pct = (downloaded_bytes / total_bytes) * 100
-                                    log_msg(f"[INFO] Downloading: {pct:.1f}% ({downloaded_bytes / 1024.0 / 1024.0:.2f} MB)")
-                                    last_log_time = current_time
+                    # Dynamic layer/band strategy:
+                    # - If Dec > 32.0 (Northern celestial cap, e.g. MzLS/BASS), prioritize ls-dr9-north and grz/z
+                    # - If Dec <= 32.0 (DECaLS / CTIO Southern sky), use ls-dr10 and r/grz
+                    strategies = []
+                    if tile_dec > 32.0:
+                        strategies = [
+                            ('ls-dr9-north', 'grz'),
+                            ('ls-dr9-north', 'z'),
+                            ('ls-dr10', 'grz'),
+                            ('ls-dr10', 'r'),
+                            ('ls-dr9', 'grz')
+                        ]
+                    else:
+                        strategies = [
+                            ('ls-dr10', 'r'),
+                            ('ls-dr10', 'grz'),
+                            ('ls-dr9', 'r'),
+                            ('ls-dr9', 'grz')
+                        ]
+                    
+                    img_data = None
+                    matched_layer = None
+                    matched_bands = None
+                    
+                    for lyr, bnds in strategies:
+                        if self.dss_download_cancelled:
+                            raise Exception("Download cancelled by user.")
+                        url = f"https://www.legacysurvey.org/viewer/fits-cutout?ra={tile_ra:.6f}&dec={tile_dec:.6f}&layer={lyr}&pixscale={pixscale:.3f}&size={size_px}&bands={bnds}"
+                        log_msg(f"[QUERY] Trying Legacy Survey {lyr} (bands={bnds})...")
+                        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+                        try:
+                            with urllib.request.urlopen(req, timeout=18, context=ssl_context) as resp:
+                                data = resp.read()
+                                if b"SIMPLE  =" in data[:100]:
+                                    # Verify that the FITS has actual signal (not blank zeros)
+                                    import io
+                                    with fits.open(io.BytesIO(data)) as test_hdul:
+                                        test_arr = test_hdul[0].data
+                                        if np.count_nonzero(test_arr) > 0 and np.nanmax(test_arr) > 0.0:
+                                            img_data = data
+                                            matched_layer = lyr
+                                            matched_bands = bnds
+                                            log_msg(f"[SUCCESS] Valid sky data found with {lyr} ({bnds})")
+                                            break
+                        except urllib.error.HTTPError as http_err:
+                            # 500 or 404 indicates region outside survey footprint
+                            if http_err.code in (500, 404):
+                                log_msg(f"[INFO] Layer {lyr} not available at this position ({http_err.code}).")
                             else:
-                                virtual_max = 4 * 1024 * 1024
-                                set_progress(min(downloaded_bytes, virtual_max), virtual_max)
-                                
-                    if b"html" in img_data[:100].lower() or b"<!doctype" in img_data[:100].lower():
-                        raise Exception("Legacy Survey service returned an HTML error page.")
+                                log_msg(f"[WARN] HTTP {http_err.code} on {lyr}: {http_err.reason}")
+                        except Exception as ex:
+                            log_msg(f"[WARN] Failed attempt with {lyr}: {ex}")
+                    
+                    if not img_data:
+                        log_msg(f"[WARN] No Legacy Survey coverage available for RA={tile_ra:.4f}, DEC={tile_dec:.4f}. Skipping tile.")
+                        continue
                         
                     cache_filename = f"legacy_{tile_ra:.6f}_{tile_dec:.6f}_{tile_size_arcmin:.1f}.fits"
                     save_path = os.path.join("legacysurvey_cache", cache_filename)
@@ -7024,7 +7054,66 @@ except ImportError:
 
 if __name__ == "__main__":
     root = TkinterDnD.Tk()
+    root.withdraw()  # Hide main window while splash is shown
+    
+    # 1. Create elegant Splash Screen
+    splash = tk.Toplevel(root)
+    splash.overrideredirect(True)
+    splash.configure(bg="#0f172a")
+    splash_w, splash_h = 440, 260
+    
+    # Center on screen
+    screen_w = root.winfo_screenwidth()
+    screen_h = root.winfo_screenheight()
+    pos_x = max(0, (screen_w - splash_w) // 2)
+    pos_y = max(0, (screen_h - splash_h) // 2)
+    splash.geometry(f"{splash_w}x{splash_h}+{pos_x}+{pos_y}")
+    
+    # Inner border frame
+    f_inner = tk.Frame(splash, bg="#1e293b", bd=2, relief="solid")
+    f_inner.pack(fill="both", expand=True, padx=2, pady=2)
+    
+    # App icon/logo
+    logo_img = None
+    if os.path.exists("app_icon.png"):
+        try:
+            from PIL import Image, ImageTk
+            pil_icon = Image.open("app_icon.png").resize((64, 64), Image.Resampling.LANCZOS)
+            logo_img = ImageTk.PhotoImage(pil_icon)
+            lbl_logo = tk.Label(f_inner, image=logo_img, bg="#1e293b")
+            lbl_logo.pack(pady=(20, 8))
+        except Exception:
+            pass
+            
+    lbl_title = tk.Label(f_inner, text="FITS Manager", bg="#1e293b", fg="#f8fafc", font=("Segoe UI", 16, "bold"))
+    lbl_title.pack()
+    
+    lbl_sub = tk.Label(f_inner, text="Astrometry & Astronomical Image Processing Suite", bg="#1e293b", fg="#94a3b8", font=("Segoe UI", 9))
+    lbl_sub.pack(pady=(2, 12))
+    
+    lbl_status = tk.Label(f_inner, text="Loading components and astrometric engines...", bg="#1e293b", fg="#38bdf8", font=("Segoe UI", 9, "italic"))
+    lbl_status.pack(pady=(5, 10))
+    
+    from tkinter import ttk
+    splash_style = ttk.Style(splash)
+    splash_style.theme_use('clam')
+    splash_style.configure("Splash.Horizontal.TProgressbar", troughcolor="#0f172a", background="#38bdf8", bordercolor="#1e293b", lightcolor="#38bdf8", darkcolor="#38bdf8")
+    
+    pbar = ttk.Progressbar(f_inner, style="Splash.Horizontal.TProgressbar", mode="indeterminate", length=340)
+    pbar.pack(pady=(0, 20))
+    pbar.start(15)
+    
+    splash.update()
+    
+    # 2. Initialize application
     app = FitsManagerApp(root)
     root.update()
     app.render_canvas(is_dragging=False)
+    
+    # 3. Destroy splash and reveal main window
+    pbar.stop()
+    splash.destroy()
+    root.deiconify()
+    root.lift()
+    root.focus_force()
     root.mainloop()
