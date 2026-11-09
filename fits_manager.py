@@ -677,8 +677,11 @@ class FitsManagerApp:
         astrom_menu.add_command(label="Query MPC Asteroids (Mag < 21)", command=self.query_mpc_asteroids)
         astrom_menu.add_checkbutton(label="Show Asteroids", variable=self.show_asteroids, command=lambda: self.render_canvas(is_dragging=False))
         astrom_menu.add_separator()
-        astrom_menu.add_command(label="Download DSS Sky Background", command=self.download_dss_background)
-        astrom_menu.add_command(label="Load PanStarrs background image", command=self.download_panstarrs_background)
+        survey_menu = tk.Menu(astrom_menu, tearoff=0, bg=self.panel_color, fg=self.text_color, activebackground=self.accent_color, activeforeground="white")
+        survey_menu.add_command(label="Download DSS Sky Background", command=self.download_dss_background)
+        survey_menu.add_command(label="Load PanStarrs Background Image", command=self.download_panstarrs_background)
+        survey_menu.add_command(label="Load Legacy Survey (DESI DR10) Background Image", command=self.download_legacysurvey_background)
+        astrom_menu.add_cascade(label="Reference Sky Surveys", menu=survey_menu)
         astrom_menu.add_separator()
         astrom_menu.add_command(label="Vizier star plate solver/astroalign (fast)", command=self.platesolve_vizier_astroalign)
         astrom_menu.add_separator()
@@ -2900,7 +2903,7 @@ class FitsManagerApp:
             c_str = urllib.parse.quote(c_val)
             catalog_stars = []
             
-            hosts = ["vizier.cfa.harvard.edu", "vizier.cds.unistra.fr"]
+            hosts = self.get_vizier_hosts()
             
             for host in hosts:
                 log_msg(f"\n[QUERY] Connecting to mirror: {host}...")
@@ -3046,6 +3049,7 @@ class FitsManagerApp:
                 
                 # If we parsed stars, we're done!
                 if len(host_stars) > 0:
+                    self.set_vizier_preferred_host(host)
                     if len(host_stars) > 300:
                         step = len(host_stars) // 300
                         catalog_stars = host_stars[::step][:300]
@@ -3659,6 +3663,35 @@ class FitsManagerApp:
                         pass
         return None
 
+    def get_cached_legacysurvey_tile(self, ra, dec, size):
+        import os
+        import numpy as np
+        if not os.path.exists("legacysurvey_cache"):
+            return None
+        for filename in os.listdir("legacysurvey_cache"):
+            if filename.startswith("legacy_") and filename.lower().endswith(('.fits', '.fit')):
+                base_name = filename
+                for ext in [".fits", ".fit"]:
+                    base_name = base_name.replace(ext, "")
+                parts = base_name.split("_")
+                if len(parts) == 4:
+                    try:
+                        file_ra = float(parts[1])
+                        file_dec = float(parts[2])
+                        file_size = float(parts[3])
+                        
+                        d_dec = dec - file_dec
+                        d_ra = ((ra - file_ra) * np.cos(np.radians((dec + file_dec) / 2.0))) % 360.0
+                        if d_ra > 180.0:
+                            d_ra = 360.0 - d_ra
+                        dist_arcmin = np.sqrt(d_ra**2 + d_dec**2) * 60.0
+                        
+                        if dist_arcmin < 5.0 and file_size >= size - 1.0:
+                            return os.path.join("legacysurvey_cache", filename)
+                    except Exception:
+                        pass
+        return None
+
     def download_panstarrs_background(self):
         if self.fits_data is None or self.wcs is None:
             messagebox.showerror("Error", "A FITS file with valid WCS headers must be loaded first.", parent=self.root)
@@ -4100,6 +4133,307 @@ class FitsManagerApp:
                     log_msg(f"[CACHE] Saved to cache: {cache_filename} and sidecar .info.json")
                     
                     log_win.after(0, lambda p=save_path, r=skycell_ra, d=skycell_dec: add_tile_to_memory(p, r, d))
+                    
+                log_win.after(0, finish_all_done)
+                
+            except Exception as e:
+                log_win.after(0, lambda err=e: finish_error(err))
+                
+        import threading
+        download_thread = threading.Thread(target=worker)
+        download_thread.daemon = True
+        download_thread.start()
+
+    def download_legacysurvey_background(self):
+        if self.fits_data is None or self.wcs is None:
+            messagebox.showerror("Error", "A FITS file with valid WCS headers must be loaded first.", parent=self.root)
+            return
+            
+        self.root.config(cursor="watch")
+        self.root.update()
+        
+        log_win = tk.Toplevel(self.root)
+        log_win.title("Legacy Survey (DESI DR10) Cutout Service Monitor")
+        log_win.geometry("600x450")
+        log_win.configure(bg="#1f2937")
+        log_win.transient(self.root)
+        
+        lbl = tk.Label(log_win, text="Retrieving Legacy Survey (DESI DR10) Reference Image...", bg="#1f2937", fg="white", font=("Segoe UI", 10, "bold"))
+        lbl.pack(pady=(10, 5))
+        
+        from tkinter import ttk
+        style = ttk.Style(log_win)
+        style.theme_use('clam')
+        style.configure("LS.Horizontal.TProgressbar", troughcolor="#111827", background="#38bdf8", bordercolor="#1f2937", lightcolor="#38bdf8", darkcolor="#38bdf8")
+        
+        progress_bar = ttk.Progressbar(log_win, style="LS.Horizontal.TProgressbar", orient="horizontal", mode="determinate", length=560)
+        progress_bar.pack(pady=5, padx=15, fill="x")
+        
+        txt_log = tk.Text(log_win, bg="#111827", fg="#38bdf8", insertbackground="white", font=("Consolas", 9), bd=0, padx=10, pady=10)
+        
+        self.dss_download_cancelled = False
+        
+        def log_msg(msg):
+            def _log():
+                txt_log.insert(tk.END, msg + "\n")
+                txt_log.see(tk.END)
+            log_win.after(0, _log)
+            
+        def cancel_download():
+            self.dss_download_cancelled = True
+            log_msg("[INFO] Cancellation requested by user...")
+            
+        btn_cancel = tk.Button(log_win, text="Cancel Download", command=cancel_download, bg="#ef4444", fg="white", font=("Segoe UI", 9, "bold"), bd=0, padx=15, pady=6)
+        btn_cancel.pack(side="bottom", pady=15)
+        
+        txt_log.pack(side="top", fill="both", expand=True, padx=15, pady=(0, 10))
+            
+        def set_progress(value, max_val):
+            def _prog():
+                progress_bar.config(maximum=max_val, value=value)
+            log_win.after(0, _prog)
+            
+        self.loaded_dss_tiles = []
+        
+        def add_tile_to_memory(file_path, r_val=None, d_val=None, should_render=True):
+            try:
+                import os
+                if r_val is None or d_val is None:
+                    base = os.path.basename(file_path)
+                    for ext in [".fits", ".fit"]:
+                        base = base.replace(ext, "")
+                    parts = base.split("_")
+                    if len(parts) == 4:
+                        r_val = float(parts[1])
+                        d_val = float(parts[2])
+
+                with fits.open(file_path) as hdul:
+                    raw_data = hdul[0].data.astype(np.float32)
+                    dss_header = hdul[0].header
+                    wcs_obj = WCS(dss_header, naxis=2)
+                
+                # If multi-band (3, H, W) compute weighted luminance
+                if raw_data.ndim == 3 and raw_data.shape[0] == 3:
+                    dss_data = 0.25 * raw_data[0] + 0.50 * raw_data[1] + 0.25 * raw_data[2]
+                elif raw_data.ndim == 3:
+                    dss_data = np.mean(raw_data, axis=0)
+                else:
+                    dss_data = raw_data
+                
+                # Background median matching to eliminate seams
+                dss_data = np.nan_to_num(dss_data, nan=np.nanmedian(dss_data))
+                bg_med = np.nanmedian(dss_data)
+                dss_data = dss_data - bg_med
+                
+                vmax = np.nanpercentile(dss_data, 99.5)
+                if np.isnan(vmax) or vmax <= 0:
+                    vmax = 1.0
+                    
+                dss_raw = np.clip(15.0 + (dss_data / vmax) * 220.0, 0, 255).astype(np.uint8)
+                
+                self.loaded_dss_tiles.append({
+                    'data': dss_raw,
+                    'wcs': wcs_obj,
+                    'path': file_path,
+                    'ra': r_val,
+                    'dec': d_val
+                })
+                
+                if should_render:
+                    self.dss_blend_ratio.set(0.50)
+                    self.dss_warped_cache = None
+                    self.render_canvas(is_dragging=False)
+                    self.root.config(cursor="")
+            except Exception as e:
+                log_msg(f"[ERROR] Failed to load tile {file_path}: {e}")
+
+        import os
+        import numpy as np
+        from astropy.coordinates import SkyCoord
+        import astropy.units as u
+        
+        h_orig, w_orig = self.debayered_cache.shape[:2]
+        center_coord = self.wcs.pixel_to_world(w_orig / 2.0, h_orig / 2.0)
+        target_ra = center_coord.ra.deg
+        target_dec = center_coord.dec.deg
+        
+        if os.path.exists("legacysurvey_cache"):
+            log_msg("[INFO] Preloading overlapping files from cache...")
+            for filename in os.listdir("legacysurvey_cache"):
+                if filename.startswith("legacy_") and filename.lower().endswith(('.fits', '.fit')):
+                    parts = filename.replace(".fits", "").replace(".fit", "").split("_")
+                    if len(parts) == 4:
+                        try:
+                            file_ra = float(parts[1])
+                            file_dec = float(parts[2])
+                            file_size = float(parts[3])
+                            
+                            d_dec = target_dec - file_dec
+                            d_ra = ((target_ra - file_ra) * np.cos(np.radians((target_dec + file_dec) / 2.0))) % 360.0
+                            if d_ra > 180.0:
+                                d_ra = 360.0 - d_ra
+                            dist_deg = np.sqrt(d_ra**2 + d_dec**2)
+                            
+                            max_dist_deg = (h_orig + w_orig)/2.0 * 0.70
+                            if dist_deg < max_dist_deg:
+                                log_msg(f"[CACHE] Auto-loading cached tile: {filename}")
+                                add_tile_to_memory(os.path.join("legacysurvey_cache", filename), file_ra, file_dec, should_render=False)
+                        except Exception:
+                            pass
+            if self.loaded_dss_tiles:
+                self.dss_blend_ratio.set(0.50)
+                self.dss_warped_cache = None
+                self.render_canvas(is_dragging=False)
+                self.root.config(cursor="")
+
+        def finish_all_done():
+            self.root.config(cursor="")
+            log_msg("[SUCCESS] All Legacy Survey tiles retrieved and merged!")
+            messagebox.showinfo("Legacy Survey Sky", "Successfully loaded Legacy Survey (DESI DR10) reference sky.\nAdjust 'DSS Sky Blend' slider below to crossfade.", parent=self.root)
+
+        def finish_error(err):
+            self.root.config(cursor="")
+            log_msg(f"[ERROR] Failed to download Legacy Survey: {err}")
+            messagebox.showerror("Error", f"Failed to retrieve Legacy Survey image: {err}", parent=self.root)
+
+        def worker():
+            try:
+                if not os.path.exists("legacysurvey_cache"):
+                    os.makedirs("legacysurvey_cache", exist_ok=True)
+                    
+                tile_size_arcmin = 25.0
+                step_deg = 0.35
+                
+                c_center = self.wcs.pixel_to_world(w_orig / 2.0, h_orig / 2.0)
+                c_right = self.wcs.pixel_to_world(w_orig, h_orig / 2.0)
+                c_top = self.wcs.pixel_to_world(w_orig / 2.0, h_orig)
+                width_deg = c_center.separation(c_right).deg * 2.0
+                height_deg = c_center.separation(c_top).deg * 2.0
+                
+                num_steps_x = int(np.ceil(width_deg / step_deg))
+                num_steps_y = int(np.ceil(height_deg / step_deg))
+                num_steps_x = np.clip(num_steps_x, 1, 5)
+                num_steps_y = np.clip(num_steps_y, 1, 5)
+                
+                half_x = (num_steps_x - 1) / 2.0
+                dx_vals = [(i - half_x) * step_deg for i in range(num_steps_x)]
+                
+                half_y = (num_steps_y - 1) / 2.0
+                dy_vals = [(i - half_y) * step_deg for i in range(num_steps_y)]
+                
+                cos_dec = np.cos(np.radians(target_dec))
+                cos_dec_val = max(1e-6, cos_dec)
+                
+                candidate_coords = []
+                for dx in dx_vals:
+                    for dy in dy_vals:
+                        cand_ra = (target_ra + dx / cos_dec_val) % 360.0
+                        cand_dec = target_dec + dy
+                        if -90.0 <= cand_dec <= 90.0:
+                            candidate_coords.append((cand_ra, cand_dec))
+                            
+                grid_points = []
+                for r, d in candidate_coords:
+                    if abs(r - target_ra) < 0.001 and abs(d - target_dec) < 0.001:
+                        grid_points.insert(0, (r, d))
+                        continue
+                    try:
+                        px, py = self.wcs.world_to_pixel(SkyCoord(ra=r*u.deg, dec=d*u.deg, frame='icrs'))
+                        if -100 <= px < w_orig + 100 and -100 <= py < h_orig + 100:
+                            grid_points.append((r, d))
+                    except Exception:
+                        pass
+                        
+                remaining_points = []
+                for r, d in grid_points:
+                    covered = False
+                    for tile in self.loaded_dss_tiles:
+                        tile_ra = tile.get('ra')
+                        tile_dec = tile.get('dec')
+                        if tile_ra is not None and tile_dec is not None:
+                            d_dec = d - tile_dec
+                            d_ra = ((r - tile_ra) * np.cos(np.radians((d + tile_dec) / 2.0))) % 360.0
+                            if d_ra > 180.0:
+                                d_ra = 360.0 - d_ra
+                            dist_arcmin = np.sqrt(d_ra**2 + d_dec**2) * 60.0
+                            if dist_arcmin < 10.0:
+                                covered = True
+                                break
+                    if not covered:
+                        remaining_points.append((r, d))
+                        
+                log_msg(f"[INFO] Generated footprint grid: {len(remaining_points)} Legacy Survey tiles to load.")
+                
+                import urllib.request
+                import ssl
+                
+                ssl_context = ssl._create_unverified_context()
+                
+                for idx, (tile_ra, tile_dec) in enumerate(remaining_points):
+                    if self.dss_download_cancelled:
+                        raise Exception("Download cancelled by user.")
+                        
+                    log_msg(f"\n--- Loading tile {idx+1}/{len(remaining_points)} at RA={tile_ra:.4f}, DEC={tile_dec:.4f} ---")
+                    
+                    cached_path = self.get_cached_legacysurvey_tile(tile_ra, tile_dec, tile_size_arcmin)
+                    if cached_path:
+                        log_msg(f"[CACHE] Found local cache: {os.path.basename(cached_path)}")
+                        if not any(abs(t.get('ra', 0.0) - tile_ra) < 0.001 and abs(t.get('dec', 0.0) - tile_dec) < 0.001 for t in self.loaded_dss_tiles):
+                            log_win.after(0, lambda p=cached_path, r=tile_ra, d=tile_dec: add_tile_to_memory(p, r, d))
+                        continue
+                        
+                    # Request 1024x1024 pixel cutout covering ~25 arcmin (pixscale ~1.46 arcsec/px)
+                    size_px = 1024
+                    pixscale = (tile_size_arcmin * 60.0) / float(size_px)
+                    url = f"https://www.legacysurvey.org/viewer/fits-cutout?ra={tile_ra:.6f}&dec={tile_dec:.6f}&layer=ls-dr10&pixscale={pixscale:.3f}&size={size_px}&bands=r"
+                    log_msg(f"[QUERY] Fetching FITS cutout from Legacy Survey (DR10)...")
+                    
+                    req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+                    with urllib.request.urlopen(req, timeout=30, context=ssl_context) as resp:
+                        content_length = resp.headers.get('Content-Length')
+                        total_bytes = int(content_length) if content_length else 0
+                        if total_bytes:
+                            log_msg(f"[INFO] Payload size: {total_bytes / 1024.0 / 1024.0:.2f} MB")
+                            set_progress(0, total_bytes)
+                        else:
+                            set_progress(0, 100)
+                            
+                        img_data = bytearray()
+                        downloaded_bytes = 0
+                        chunk_size = 65536
+                        last_log_time = 0
+                        
+                        while True:
+                            if self.dss_download_cancelled:
+                                raise Exception("Download cancelled by user.")
+                            chunk = resp.read(chunk_size)
+                            if not chunk:
+                                break
+                            img_data.extend(chunk)
+                            downloaded_bytes += len(chunk)
+                            
+                            if total_bytes:
+                                set_progress(downloaded_bytes, total_bytes)
+                                import time
+                                current_time = time.time()
+                                if current_time - last_log_time > 1.5 or downloaded_bytes == total_bytes:
+                                    pct = (downloaded_bytes / total_bytes) * 100
+                                    log_msg(f"[INFO] Downloading: {pct:.1f}% ({downloaded_bytes / 1024.0 / 1024.0:.2f} MB)")
+                                    last_log_time = current_time
+                            else:
+                                virtual_max = 4 * 1024 * 1024
+                                set_progress(min(downloaded_bytes, virtual_max), virtual_max)
+                                
+                    if b"html" in img_data[:100].lower() or b"<!doctype" in img_data[:100].lower():
+                        raise Exception("Legacy Survey service returned an HTML error page.")
+                        
+                    cache_filename = f"legacy_{tile_ra:.6f}_{tile_dec:.6f}_{tile_size_arcmin:.1f}.fits"
+                    save_path = os.path.join("legacysurvey_cache", cache_filename)
+                    with open(save_path, "wb") as f:
+                        f.write(img_data)
+                    log_msg(f"[CACHE] Saved to cache: {cache_filename}")
+                    
+                    log_win.after(0, lambda p=save_path, r=tile_ra, d=tile_dec: add_tile_to_memory(p, r, d))
                     
                 log_win.after(0, finish_all_done)
                 
@@ -4813,25 +5147,27 @@ class FitsManagerApp:
                 c_val = f"{ra_deg:.6f} {dec_deg:.6f}".replace(',', '.')
                 c_str = urllib.parse.quote(c_val)
                 
-                url = f"https://vizier.cds.unistra.fr/viz-bin/asu-tsv?-source=I/355/gaiadr3&-c={c_str}&-c.r={radius_arcmin:f}&-c.u=arcmin&-out.form=|&-out.add=RA_ICRS,DE_ICRS&-out=Gmag&-sort=Gmag&-out.max=500"
-                
-                req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
                 ssl_context = ssl._create_unverified_context()
-                
+                hosts = self.get_vizier_hosts()
                 lines = []
-                try:
-                    with urllib.request.urlopen(req, timeout=20, context=ssl_context) as response:
-                        lines = response.read().decode('utf-8').split('\n')
-                except Exception as ex:
-                    log_msg(f"[WARN] Primary mirror failed: {ex}. Trying Harvard...")
-                    url_harv = url.replace("vizier.cds.unistra.fr", "vizier.cfa.harvard.edu")
-                    req = urllib.request.Request(url_harv, headers={'User-Agent': 'Mozilla/5.0'})
+                working_host = None
+                for host in hosts:
+                    url = f"https://{host}/viz-bin/asu-tsv?-source=I/355/gaiadr3&-c={c_str}&-c.r={radius_arcmin:f}&-c.u=arcmin&-out.form=|&-out.add=RA_ICRS,DE_ICRS&-out=Gmag&-sort=Gmag&-out.max=500"
+                    req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+                    log_msg(f"[QUERY] Querying Vizier Gaia DR3 on mirror {host} (Radius: {radius_arcmin} arcmin)...")
                     try:
-                        with urllib.request.urlopen(req, timeout=20, context=ssl_context) as response:
+                        with urllib.request.urlopen(req, timeout=8, context=ssl_context) as response:
                             lines = response.read().decode('utf-8').split('\n')
-                    except Exception as harv_ex:
-                        log_msg(f"[ERROR] Harvard mirror also failed: {harv_ex}")
-                        raise Exception(f"All Vizier mirrors failed (Primary: {ex}, Secondary: {harv_ex}). Check your connection.")
+                        if len(lines) > 20:
+                            working_host = host
+                            self.set_vizier_preferred_host(host)
+                            log_msg(f"[SUCCESS] Received {len(lines)} lines from mirror {host}")
+                            break
+                    except Exception as ex:
+                        log_msg(f"[WARN] Mirror {host} failed: {ex}")
+
+                if not lines or not working_host:
+                    raise Exception("All Vizier mirrors failed to respond. Check your connection.")
                 
                 header_found = False
                 cols = {}
@@ -4968,6 +5304,21 @@ class FitsManagerApp:
         status = job_info.get("status", "")
         if status != "pending" and self.wcs is None:
             self.platesolve_vizier_astroalign()
+
+    def get_vizier_hosts(self):
+        """Returns the list of Vizier hosts ordered by user preference with failover capability."""
+        pref = self.settings.get("vizier_preferred_mirror", "vizier.cfa.harvard.edu")
+        hosts = [pref]
+        fallback = "vizier.cds.unistra.fr" if pref != "vizier.cds.unistra.fr" else "vizier.cfa.harvard.edu"
+        if fallback not in hosts:
+            hosts.append(fallback)
+        return hosts
+
+    def set_vizier_preferred_host(self, host):
+        """Persists the preferred Vizier mirror upon detecting a working failover."""
+        if self.settings.get("vizier_preferred_mirror") != host:
+            self.settings["vizier_preferred_mirror"] = host
+            self.save_settings()
 
     def load_settings(self):
         import json
@@ -5798,21 +6149,23 @@ class FitsManagerApp:
                 c_str = urllib.parse.quote(f"{ra_deg:.6f} {dec_deg:.6f}")
                 radius_arcmin = 0.16667 # 10 arcseconds
                 cols = "Source,RA_ICRS,DE_ICRS,Plx,e_Plx,pmRA,pmDE,Gmag,BPmag,RPmag,RV,Teff,phot_variable_flag"
-                url = f"https://vizier.cds.unistra.fr/viz-bin/asu-tsv?-source=I/355/gaiadr3&-c={c_str}&-c.r={radius_arcmin:f}&-c.u=arcmin&-out.form=|&-out.max=1&-out={cols}"
-                
-                req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
                 ssl_context = ssl._create_unverified_context()
-                
+                hosts = self.get_vizier_hosts()
                 content = ""
-                try:
-                    with urllib.request.urlopen(req, timeout=15, context=ssl_context) as response:
-                        content = response.read().decode('utf-8')
-                except Exception as ex:
-                    # Try Harvard mirror
-                    url_harv = url.replace("vizier.cds.unistra.fr", "vizier.cfa.harvard.edu")
-                    req_harv = urllib.request.Request(url_harv, headers={'User-Agent': 'Mozilla/5.0'})
-                    with urllib.request.urlopen(req_harv, timeout=15, context=ssl_context) as response:
-                        content = response.read().decode('utf-8')
+                working_host = None
+
+                for host in hosts:
+                    url = f"https://{host}/viz-bin/asu-tsv?-source=I/355/gaiadr3&-c={c_str}&-c.r={radius_arcmin:f}&-c.u=arcmin&-out.form=|&-out.max=1&-out={cols}"
+                    req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+                    try:
+                        with urllib.request.urlopen(req, timeout=8, context=ssl_context) as response:
+                            content = response.read().decode('utf-8')
+                        if len(content) > 50:
+                            working_host = host
+                            self.set_vizier_preferred_host(host)
+                            break
+                    except Exception:
+                        continue
                         
                 lines = content.split('\n')
                 data_line = None
@@ -5946,10 +6299,10 @@ class FitsManagerApp:
                     txt_info.pack(padx=10, pady=10, fill="both", expand=True)
                     txt_info.insert(tk.END, final_text)
                     
-                    url_aladin = f"https://aladin.cds.unistra.fr/AladinLite/?target={cat_ra:.6f}%20{cat_dec:.6f}&fov=0.15"
+                    url_aladin = f"https://www.legacysurvey.org/viewer?ra={cat_ra:.6f}&dec={cat_dec:.6f}&zoom=15"
                     txt_info.tag_bind("link", "<Button-1>", lambda e: webbrowser.open_new_tab(url_aladin))
                     
-                    txt_info.insert(tk.END, "\n\n🔗 View on Aladin Lite (interactive sky map)", "link")
+                    txt_info.insert(tk.END, "\n\n🔗 View on Sky Viewer (Legacy Survey / Interactive)", "link")
                     txt_info.insert(tk.END, "\n==================================================")
                     
                     txt_info.config(state=tk.DISABLED)
@@ -6096,16 +6449,19 @@ class FitsManagerApp:
             c_val = f"{ra_deg:.6f} {dec_deg:.6f}".replace(',', '.')
             c_str = urllib.parse.quote(c_val)
             
-            hosts = ["vizier.cds.unistra.fr", "vizier.cfa.harvard.edu"]
+            hosts = self.get_vizier_hosts()
             lines = []
+            working_host = None
             for host in hosts:
                 url = f"https://{host}/viz-bin/asu-tsv?-source=I/355/gaiadr3&-c={c_str}&-c.r={radius_arcmin:f}&-c.u=arcmin&-out.form=|&-out.add=RA_ICRS,DE_ICRS&-out=Gmag,bp_rp,phot_variable_flag&-sort=_r&-out.max=4000"
                 log_msg(f"[QUERY] Fetching deep Gaia catalog from: {host}...")
                 req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
                 try:
-                    with urllib.request.urlopen(req, timeout=12, context=ssl_context) as response:
+                    with urllib.request.urlopen(req, timeout=10, context=ssl_context) as response:
                         lines = response.read().decode('utf-8').split('\n')
                     if len(lines) > 50:
+                        working_host = host
+                        self.set_vizier_preferred_host(host)
                         log_msg(f"[SUCCESS] Retrieved {len(lines)} raw lines from {host}")
                         break
                 except Exception as query_err:
@@ -6351,7 +6707,7 @@ class FitsManagerApp:
 
     def cleanup_caches_startup(self):
         import os
-        for cache_dir in ["dss_cache", "panstarrs_cache"]:
+        for cache_dir in ["dss_cache", "panstarrs_cache", "legacysurvey_cache"]:
             os.makedirs(cache_dir, exist_ok=True)
             try:
                 files = []
