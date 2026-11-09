@@ -6420,35 +6420,69 @@ class FitsManagerApp:
                 report.append("")
                 
                 report.append("--- Nature / Classification (Star vs Galaxy) ---")
-                prob_star = star_data.get('classprob_star')
-                prob_gal = star_data.get('classprob_galaxy')
-                prob_qso = star_data.get('classprob_qso')
                 
-                obj_nature = "Point Source (Probable Star)"
-                if prob_gal and prob_star:
-                    try:
-                        p_s = float(prob_star) * 100.0
-                        p_g = float(prob_gal) * 100.0
-                        p_q = float(prob_qso) * 100.0 if prob_qso else 0.0
-                        if p_g > 50.0:
-                            obj_nature = f"EXTRAGALACTIC / GALAXY ({p_g:.1f}% confidence)"
-                        elif p_q > 50.0:
-                            obj_nature = f"QUASAR / AGN ({p_q:.1f}% confidence)"
-                        else:
-                            obj_nature = f"GALACTIC STAR ({p_s:.1f}% confidence)"
-                        report.append(f"Gaia DSC Model  : {obj_nature}")
-                        report.append(f"Probabilities   : Star {p_s:.1f}% | Galaxy {p_g:.1f}% | Quasar {p_q:.1f}%")
-                    except Exception:
-                        report.append(f"Object Nature   : {obj_nature}")
+                # Check directly with NED API for identified extragalactic objects
+                ned_match = None
+                try:
+                    ned_api_url = f"https://ned.ipac.caltech.edu/NED::API/ConeSearchByPosition?RA={cat_ra:.6f}d&DEC={cat_dec:.6f}d&RADIUS=0.5"
+                    req_ned = urllib.request.Request(ned_api_url, headers={'User-Agent': 'Mozilla/5.0'})
+                    with urllib.request.urlopen(req_ned, timeout=5, context=ssl_context) as r_ned:
+                        ned_xml = r_ned.read().decode('utf-8')
+                    root_ned = ET.fromstring(ned_xml)
+                    ns_ned = {'v': 'http://www.ivoa.net/xml/VOTable/v1.3'}
+                    f_names = [f.attrib.get('name') for f in root_ned.findall('.//v:FIELD', ns_ned)]
+                    r_rows = root_ned.findall('.//v:TR', ns_ned)
+                    if r_rows:
+                        tds_ned = [td.text for td in r_rows[0].findall('v:TD', ns_ned)]
+                        d_ned = dict(zip(f_names, tds_ned))
+                        sep_arcsec = float(d_ned.get('Separation', 0)) * 3600.0
+                        if sep_arcsec <= 45.0:
+                            ned_match = {
+                                'name': d_ned.get('Object Name'),
+                                'type': d_ned.get('Phys Type', 'Galaxy'),
+                                'z': d_ned.get('Redshift (z)'),
+                                'cz': d_ned.get('cz'),
+                                'sep': sep_arcsec
+                            }
+                except Exception:
+                    pass
+
+                if ned_match:
+                    report.append(f"NED Extragalactic: {ned_match['name']} ({ned_match['type']})")
+                    if ned_match.get('z'):
+                        report.append(f"Redshift (z)    : {ned_match['z']} (cz = {float(ned_match.get('cz', 0)):.1f} km/s)")
+                    report.append(f"NED Match Offset: {ned_match['sep']:.1f} arcsec from click")
+                    report.append("Object Nature   : CONFIRMED EXTRAGALACTIC GALAXY / OBJECT (NASA NED)")
                 else:
-                    # Heuristic check from astrometric motion/parallax
-                    pm_ra = float(star_data.get('pmRA', 0) or 0)
-                    pm_de = float(star_data.get('pmDE', 0) or 0)
-                    tot_pm = (pm_ra**2 + pm_de**2)**0.5
-                    if tot_pm > 2.0:
-                        report.append(f"Object Nature   : Galactic Star (High Proper Motion: {tot_pm:.2f} mas/yr)")
+                    prob_star = star_data.get('classprob_star')
+                    prob_gal = star_data.get('classprob_galaxy')
+                    prob_qso = star_data.get('classprob_qso')
+                    
+                    obj_nature = "Point Source (Probable Star)"
+                    if prob_gal and prob_star:
+                        try:
+                            p_s = float(prob_star) * 100.0
+                            p_g = float(prob_gal) * 100.0
+                            p_q = float(prob_qso) * 100.0 if prob_qso else 0.0
+                            if p_g > 50.0:
+                                obj_nature = f"EXTRAGALACTIC / GALAXY ({p_g:.1f}% confidence)"
+                            elif p_q > 50.0:
+                                obj_nature = f"QUASAR / AGN ({p_q:.1f}% confidence)"
+                            else:
+                                obj_nature = f"GALACTIC STAR ({p_s:.1f}% confidence)"
+                            report.append(f"Gaia DSC Model  : {obj_nature}")
+                            report.append(f"Probabilities   : Star {p_s:.1f}% | Galaxy {p_g:.1f}% | Quasar {p_q:.1f}%")
+                        except Exception:
+                            report.append(f"Object Nature   : {obj_nature}")
                     else:
-                        report.append("Object Nature   : Stellar point source (or unresolved compact object)")
+                        # Heuristic check from astrometric motion/parallax
+                        pm_ra = float(star_data.get('pmRA', 0) or 0)
+                        pm_de = float(star_data.get('pmDE', 0) or 0)
+                        tot_pm = (pm_ra**2 + pm_de**2)**0.5
+                        if tot_pm > 2.0:
+                            report.append(f"Object Nature   : Galactic Star (High Proper Motion: {tot_pm:.2f} mas/yr)")
+                        else:
+                            report.append("Object Nature   : Stellar point source (or unresolved compact object)")
                 report.append("")
                 
                 report.append("--- Photometric Magnitudes ---")
@@ -6504,7 +6538,7 @@ class FitsManagerApp:
                     
                     url_legacy = f"https://www.legacysurvey.org/viewer?ra={cat_ra:.6f}&dec={cat_dec:.6f}&zoom=15"
                     url_simbad = f"https://simbad.cfa.harvard.edu/simbad/sim-coo?Coord={cat_ra:.6f}+{cat_dec:.6f}&Radius=1&Radius.unit=arcmin"
-                    url_ned = f"https://ned.ipac.caltech.edu/conesearch?search_type=Near+Position+Search&coordinates={cat_ra:.6f}d+{cat_dec:.6f}d&radius=1.0"
+                    url_ned = f"https://ned.ipac.caltech.edu/cgi-bin/objsearch?search_type=Near+Position+Search&lon={cat_ra:.6f}d&lat={cat_dec:.6f}d&radius=1.0"
                     
                     txt_info.tag_configure("link_simbad", foreground="#facc15", underline=1)
                     txt_info.tag_bind("link_simbad", "<Enter>", lambda e: txt_info.config(cursor="hand2"))
@@ -6520,7 +6554,7 @@ class FitsManagerApp:
                     
                     txt_info.insert(tk.END, "\n--- Official Astronomical Portals ---")
                     txt_info.insert(tk.END, "\n🔗 Query SIMBAD Database (Stars, Variables, Binaries)", "link_simbad")
-                    txt_info.insert(tk.END, "\n🔗 Query NASA/IPAC Extragalactic Database (NED Galaxies/QSOs)", "link_ned")
+                    txt_info.insert(tk.END, "\n🔗 Open NASA/IPAC Extragalactic Database (NED Object Results)", "link_ned")
                     txt_info.insert(tk.END, "\n🔗 View on Interactive Sky Viewer (Legacy Survey)", "link")
                     txt_info.insert(tk.END, "\n==================================================")
                     
