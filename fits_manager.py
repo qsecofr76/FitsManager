@@ -6215,65 +6215,117 @@ class FitsManagerApp:
                 import urllib.parse
                 import ssl
                 
-                c_str = urllib.parse.quote(f"{ra_deg:.6f} {dec_deg:.6f}")
-                radius_arcmin = 0.16667 # 10 arcseconds
-                cols = "Source,RA_ICRS,DE_ICRS,Plx,e_Plx,pmRA,pmDE,Gmag,BPmag,RPmag,RV,Teff,phot_variable_flag"
+                # Query radius: 25 arcseconds (accommodates slight centroid offsets or manual clicks)
+                search_radius_arcsec = 25.0
+                sr_deg = search_radius_arcsec / 3600.0
                 ssl_context = ssl._create_unverified_context()
                 star_data = None
                 
-                # 1. Primary engine: Official ESA Gaia TAP Server (fast, highly available, unaffected by CDS outages)
+                # 1. Primary engine: NASA IPAC / IRSA Gaia DR3 Simple Cone Search (High reliability, fast VO endpoint)
                 try:
-                    import json
-                    radius_deg = 10.0 / 3600.0  # 10 arcseconds
-                    adql = f"""
-                    SELECT TOP 1
-                        source_id, ra, dec, parallax, parallax_error, pmra, pmdec,
-                        phot_g_mean_mag, phot_bp_mean_mag, phot_rp_mean_mag,
-                        radial_velocity, teff_gspphot, phot_variable_flag
-                    FROM gaiadr3.gaia_source
-                    WHERE 1=CONTAINS(
-                        POINT('ICRS', ra, dec),
-                        CIRCLE('ICRS', {ra_deg:.7f}, {dec_deg:.7f}, {radius_deg:.7f})
-                    )
-                    ORDER BY phot_g_mean_mag ASC
-                    """
-                    esa_params = urllib.parse.urlencode({
-                        'REQUEST': 'doQuery',
-                        'LANG': 'ADQL',
-                        'FORMAT': 'json',
-                        'QUERY': adql
-                    })
-                    esa_url = f"https://gea.esac.esa.int/tap-server/tap/sync?{esa_params}"
-                    req_esa = urllib.request.Request(esa_url, headers={'User-Agent': 'Mozilla/5.0'})
-                    with urllib.request.urlopen(req_esa, timeout=8, context=ssl_context) as resp:
-                        res_json = json.loads(resp.read().decode('utf-8'))
-                        rows = res_json.get('data', [])
-                        if rows:
-                            r0 = rows[0]
-                            star_data = {
-                                'Source': str(r0[0]) if r0[0] is not None else '',
-                                'RA_ICRS': str(r0[1]) if r0[1] is not None else '',
-                                'DE_ICRS': str(r0[2]) if r0[2] is not None else '',
-                                'Plx': str(r0[3]) if r0[3] is not None else '',
-                                'e_Plx': str(r0[4]) if r0[4] is not None else '',
-                                'pmRA': str(r0[5]) if r0[5] is not None else '',
-                                'pmDE': str(r0[6]) if r0[6] is not None else '',
-                                'Gmag': str(r0[7]) if r0[7] is not None else '',
-                                'BPmag': str(r0[8]) if r0[8] is not None else '',
-                                'RPmag': str(r0[9]) if r0[9] is not None else '',
-                                'RV': str(r0[10]) if r0[10] is not None else '',
-                                'Teff': str(r0[11]) if r0[11] is not None else '',
-                                'phot_variable_flag': str(r0[12]) if r0[12] is not None else ''
-                            }
-                except Exception as esa_err:
-                    pass
+                    import xml.etree.ElementTree as ET
+                    irsa_url = f"https://irsa.ipac.caltech.edu/SCS?table=gaia_dr3_source&RA={ra_deg:.7f}&DEC={dec_deg:.7f}&SR={sr_deg:.6f}"
+                    req_irsa = urllib.request.Request(irsa_url, headers={'User-Agent': 'Mozilla/5.0'})
+                    with urllib.request.urlopen(req_irsa, timeout=8, context=ssl_context) as resp:
+                        irsa_xml = resp.read().decode('utf-8')
+                        
+                    root = ET.fromstring(irsa_xml)
+                    fields = [f.attrib.get('name') for f in root.findall('.//{http://www.ivoa.net/xml/VOTable/v1.3}FIELD') or root.findall('.//FIELD')]
+                    rows = root.findall('.//{http://www.ivoa.net/xml/VOTable/v1.3}TR') or root.findall('.//TR')
                     
-                # 2. Fallback engine: Vizier mirrors (if ESA server fails or times out)
+                    if rows:
+                        candidates = []
+                        for row in rows:
+                            tds = [td.text for td in row.findall('{http://www.ivoa.net/xml/VOTable/v1.3}TD') or row.findall('TD')]
+                            d = dict(zip(fields, tds))
+                            s_ra = float(d['ra'])
+                            s_dec = float(d['dec'])
+                            d_dec = (s_dec - dec_deg) * 3600.0
+                            d_ra = (s_ra - ra_deg) * np.cos(np.radians((s_dec + dec_deg) / 2.0)) * 3600.0
+                            sep = np.sqrt(d_ra**2 + d_dec**2)
+                            gmag = float(d['phot_g_mean_mag']) if d.get('phot_g_mean_mag') else 99.0
+                            candidates.append((sep, gmag, d))
+                            
+                        # Balance separation and magnitude: pick the closest prominent object
+                        candidates.sort(key=lambda c: c[0] + 0.3 * c[1])
+                        best_sep, best_gmag, best_dict = candidates[0]
+                        
+                        star_data = {
+                            'Source': best_dict.get('source_id', ''),
+                            'RA_ICRS': best_dict.get('ra', ''),
+                            'DE_ICRS': best_dict.get('dec', ''),
+                            'Plx': best_dict.get('parallax', ''),
+                            'e_Plx': best_dict.get('parallax_error', ''),
+                            'pmRA': best_dict.get('pmra', ''),
+                            'pmDE': best_dict.get('pmdec', ''),
+                            'Gmag': best_dict.get('phot_g_mean_mag', ''),
+                            'BPmag': best_dict.get('phot_bp_mean_mag', ''),
+                            'RPmag': best_dict.get('phot_rp_mean_mag', ''),
+                            'RV': best_dict.get('radial_velocity', ''),
+                            'Teff': best_dict.get('teff_gspphot', ''),
+                            'phot_variable_flag': best_dict.get('phot_variable_flag', ''),
+                            'classprob_star': best_dict.get('classprob_dsc_combmod_star', ''),
+                            'classprob_galaxy': best_dict.get('classprob_dsc_combmod_galaxy', ''),
+                            'classprob_qso': best_dict.get('classprob_dsc_combmod_quasar', ''),
+                            'sep_arcsec': f"{best_sep:.2f}"
+                        }
+                except Exception as irsa_err:
+                    pass
+
+                # 2. Secondary engine: Official ESA Gaia TAP Server
                 if not star_data:
+                    try:
+                        import json
+                        adql = f"""
+                        SELECT TOP 1
+                            source_id, ra, dec, parallax, parallax_error, pmra, pmdec,
+                            phot_g_mean_mag, phot_bp_mean_mag, phot_rp_mean_mag,
+                            radial_velocity, teff_gspphot, phot_variable_flag
+                        FROM gaiadr3.gaia_source
+                        WHERE 1=CONTAINS(
+                            POINT('ICRS', ra, dec),
+                            CIRCLE('ICRS', {ra_deg:.7f}, {dec_deg:.7f}, {sr_deg:.7f})
+                        )
+                        ORDER BY phot_g_mean_mag ASC
+                        """
+                        esa_params = urllib.parse.urlencode({
+                            'REQUEST': 'doQuery',
+                            'LANG': 'ADQL',
+                            'FORMAT': 'json',
+                            'QUERY': adql
+                        })
+                        esa_url = f"https://gea.esac.esa.int/tap-server/tap/sync?{esa_params}"
+                        req_esa = urllib.request.Request(esa_url, headers={'User-Agent': 'Mozilla/5.0'})
+                        with urllib.request.urlopen(req_esa, timeout=8, context=ssl_context) as resp:
+                            res_json = json.loads(resp.read().decode('utf-8'))
+                            rows = res_json.get('data', [])
+                            if rows:
+                                r0 = rows[0]
+                                star_data = {
+                                    'Source': str(r0[0]) if r0[0] is not None else '',
+                                    'RA_ICRS': str(r0[1]) if r0[1] is not None else '',
+                                    'DE_ICRS': str(r0[2]) if r0[2] is not None else '',
+                                    'Plx': str(r0[3]) if r0[3] is not None else '',
+                                    'e_Plx': str(r0[4]) if r0[4] is not None else '',
+                                    'pmRA': str(r0[5]) if r0[5] is not None else '',
+                                    'pmDE': str(r0[6]) if r0[6] is not None else '',
+                                    'Gmag': str(r0[7]) if r0[7] is not None else '',
+                                    'BPmag': str(r0[8]) if r0[8] is not None else '',
+                                    'RPmag': str(r0[9]) if r0[9] is not None else '',
+                                    'RV': str(r0[10]) if r0[10] is not None else '',
+                                    'Teff': str(r0[11]) if r0[11] is not None else '',
+                                    'phot_variable_flag': str(r0[12]) if r0[12] is not None else ''
+                                }
+                    except Exception:
+                        pass
+                        
+                # 3. Tertiary fallback: Vizier mirrors
+                if not star_data:
+                    c_str = urllib.parse.quote(f"{ra_deg:.6f} {dec_deg:.6f}")
                     hosts = self.get_vizier_hosts()
                     content = ""
                     for host in hosts:
-                        url = f"https://{host}/viz-bin/asu-tsv?-source=I/355/gaiadr3&-c={c_str}&-c.r={radius_arcmin:f}&-c.u=arcmin&-out.form=|&-out.max=1&-out={cols}"
+                        url = f"https://{host}/viz-bin/asu-tsv?-source=I/355/gaiadr3&-c={c_str}&-c.r={search_radius_arcsec/60.0:f}&-c.u=arcmin&-out.form=|&-out.max=1&-out={cols}"
                         req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
                         try:
                             with urllib.request.urlopen(req, timeout=8, context=ssl_context) as response:
@@ -6312,7 +6364,7 @@ class FitsManagerApp:
                 if not star_data:
                     def _show_no_star():
                         lbl_loading.pack_forget()
-                        lbl_err = tk.Label(info_win, text="No Gaia DR3 star found near this coordinate\n(within 10 arcseconds radius).", bg=self.panel_color, fg="#facc15", font=("Segoe UI", 11, "bold"))
+                        lbl_err = tk.Label(info_win, text=f"No Gaia DR3 star found near this coordinate\n(within {int(search_radius_arcsec)} arcseconds radius).", bg=self.panel_color, fg="#facc15", font=("Segoe UI", 11, "bold"))
                         lbl_err.pack(pady=100)
                     info_win.after(0, _show_no_star)
                     return
@@ -6363,6 +6415,40 @@ class FitsManagerApp:
                 report.append(f"Proper Motion RA: {star_data.get('pmRA', 'N/A')} mas/yr")
                 report.append(f"Proper Motion DEC: {star_data.get('pmDE', 'N/A')} mas/yr")
                 report.append(f"Radial Velocity: {star_data.get('RV', 'N/A')} km/s")
+                if star_data.get('sep_arcsec'):
+                    report.append(f"Click Separation: {star_data.get('sep_arcsec')} arcsec")
+                report.append("")
+                
+                report.append("--- Nature / Classification (Star vs Galaxy) ---")
+                prob_star = star_data.get('classprob_star')
+                prob_gal = star_data.get('classprob_galaxy')
+                prob_qso = star_data.get('classprob_qso')
+                
+                obj_nature = "Point Source (Probable Star)"
+                if prob_gal and prob_star:
+                    try:
+                        p_s = float(prob_star) * 100.0
+                        p_g = float(prob_gal) * 100.0
+                        p_q = float(prob_qso) * 100.0 if prob_qso else 0.0
+                        if p_g > 50.0:
+                            obj_nature = f"EXTRAGALACTIC / GALAXY ({p_g:.1f}% confidence)"
+                        elif p_q > 50.0:
+                            obj_nature = f"QUASAR / AGN ({p_q:.1f}% confidence)"
+                        else:
+                            obj_nature = f"GALACTIC STAR ({p_s:.1f}% confidence)"
+                        report.append(f"Gaia DSC Model  : {obj_nature}")
+                        report.append(f"Probabilities   : Star {p_s:.1f}% | Galaxy {p_g:.1f}% | Quasar {p_q:.1f}%")
+                    except Exception:
+                        report.append(f"Object Nature   : {obj_nature}")
+                else:
+                    # Heuristic check from astrometric motion/parallax
+                    pm_ra = float(star_data.get('pmRA', 0) or 0)
+                    pm_de = float(star_data.get('pmDE', 0) or 0)
+                    tot_pm = (pm_ra**2 + pm_de**2)**0.5
+                    if tot_pm > 2.0:
+                        report.append(f"Object Nature   : Galactic Star (High Proper Motion: {tot_pm:.2f} mas/yr)")
+                    else:
+                        report.append("Object Nature   : Stellar point source (or unresolved compact object)")
                 report.append("")
                 
                 report.append("--- Photometric Magnitudes ---")
@@ -6416,10 +6502,26 @@ class FitsManagerApp:
                     txt_info.pack(padx=10, pady=10, fill="both", expand=True)
                     txt_info.insert(tk.END, final_text)
                     
-                    url_aladin = f"https://www.legacysurvey.org/viewer?ra={cat_ra:.6f}&dec={cat_dec:.6f}&zoom=15"
-                    txt_info.tag_bind("link", "<Button-1>", lambda e: webbrowser.open_new_tab(url_aladin))
+                    url_legacy = f"https://www.legacysurvey.org/viewer?ra={cat_ra:.6f}&dec={cat_dec:.6f}&zoom=15"
+                    url_simbad = f"https://simbad.cfa.harvard.edu/simbad/sim-coo?Coord={cat_ra:.6f}+{cat_dec:.6f}&Radius=1&Radius.unit=arcmin"
+                    url_ned = f"https://ned.ipac.caltech.edu/conesearch?search_type=Near+Position+Search&coordinates={cat_ra:.6f}d+{cat_dec:.6f}d&radius=1.0"
                     
-                    txt_info.insert(tk.END, "\n\n🔗 View on Sky Viewer (Legacy Survey / Interactive)", "link")
+                    txt_info.tag_configure("link_simbad", foreground="#facc15", underline=1)
+                    txt_info.tag_bind("link_simbad", "<Enter>", lambda e: txt_info.config(cursor="hand2"))
+                    txt_info.tag_bind("link_simbad", "<Leave>", lambda e: txt_info.config(cursor="xterm"))
+                    txt_info.tag_bind("link_simbad", "<Button-1>", lambda e: webbrowser.open_new_tab(url_simbad))
+                    
+                    txt_info.tag_configure("link_ned", foreground="#4ade80", underline=1)
+                    txt_info.tag_bind("link_ned", "<Enter>", lambda e: txt_info.config(cursor="hand2"))
+                    txt_info.tag_bind("link_ned", "<Leave>", lambda e: txt_info.config(cursor="xterm"))
+                    txt_info.tag_bind("link_ned", "<Button-1>", lambda e: webbrowser.open_new_tab(url_ned))
+                    
+                    txt_info.tag_bind("link", "<Button-1>", lambda e: webbrowser.open_new_tab(url_legacy))
+                    
+                    txt_info.insert(tk.END, "\n--- Official Astronomical Portals ---")
+                    txt_info.insert(tk.END, "\n🔗 Query SIMBAD Database (Stars, Variables, Binaries)", "link_simbad")
+                    txt_info.insert(tk.END, "\n🔗 Query NASA/IPAC Extragalactic Database (NED Galaxies/QSOs)", "link_ned")
+                    txt_info.insert(tk.END, "\n🔗 View on Interactive Sky Viewer (Legacy Survey)", "link")
                     txt_info.insert(tk.END, "\n==================================================")
                     
                     txt_info.config(state=tk.DISABLED)
