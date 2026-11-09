@@ -1,21 +1,33 @@
 # FitsManager
 
-FitsManager è un'applicazione desktop leggera per Windows dedicata alla visualizzazione, all'analisi rapida, alla calibrazione e alla misurazione fotometrica di file astronomici in formato FITS (Flexible Image Transport System). Integra funzioni avanzate di allineamento e coordinate celesti (WCS), interrogazioni di cataloghi stellari, calibrazione fotometrica ed estrazione di dati fisici in tempo reale.
+FitsManager è un'applicazione desktop leggera per Windows dedicata alla visualizzazione, all'analisi rapida, alla calibrazione e alla misurazione fotometrica di file astronomici in formato FITS (Flexible Image Transport System). Integra funzioni avanzate di allineamento e coordinate celesti (WCS), interrogazioni multi-catalogo stellare ed extragalattico, download di survey astronomiche reali (DSS, Pan-STARRS, Legacy Survey DR9/DR10), calibrazione fotometrica ed estrazione di dati fisici in tempo reale.
 
 *(English version below)*
 
-
 ---
 
-## Novità ed Evoluzione (News: v1.0.1 vs v1.1.0)
+## Novità ed Evoluzione (v1.2.0)
 
-La versione **1.1.0** introduce importanti implementazioni rispetto alla precedente versione 1.0.1:
+La versione **1.2.0** introduce rilevanti potenziamenti su affidabilità dei cataloghi, identificazione extragalattica e survey astronomiche di riferimento:
 
-1. **Stima della magnitudine limite (magnitudine massima ottenuta)**: Algoritmo per determinare la sensibilità e la magnitudine limite raggiunta dallo scatto analizzando le stelle di catalogo rilevate.
-2. **Apertura di file non-FITS (TIFF/PNG/JPG)**: Supporto completo al caricamento di immagini in formato standard con persistenza automatica di WCS, metadati e annotazioni tramite un file sidecar JSON (`.info.json`).
-3. **Download dello sfondo di riferimento PanSTARRS**: Integrazione per scaricare tasselli reali d'archivio PanSTARRS (skycell) allineandoli automaticamente all'immagine FITS.
-4. **Ricerca dei transienti**: Interrogazione pubblica diretta del database TNS (Transient Name Server) per contrassegnare novae e supernovae con marker e scritte ad alta visibilità.
-5. **Eliminazione dei gradienti**: Strumento di rimozione e correzione del gradiente di luminosità dello sfondo cielo per uniformare il campo dell'immagine.
+1. **Integrazione Avanzata NASA/IPAC NED & Classificazione Galassie**:
+   - Interrogazione automatica REST delle nuove API di NED (*NASA/IPAC Extragalactic Database*).
+   - Identificazione scientifica rigorosa tra stelle galattiche e oggetti extragalattici (basata su tipo fisico, redshift cosmologico $z$, velocità radiale $cz$ e cataloghi storici NGC, IC, UGC, PGC, 2MASX).
+   - Riconoscimento ed esclusione automatica di sorgenti puntiformi infrarosse generiche (`IrS`, `WISEA`, `2MASS`) per evitare falsi positivi.
+   - Visualizzazione grafica con **cerchietto azzurro (`#38bdf8`)** ed etichetta dell'oggetto extragalattico sulla mappa e sulle immagini esportate.
+2. **Supporto Ufficiale NASA IRSA ed ESA TAP per Gaia DR3**:
+   - Passaggio a **NASA IPAC / IRSA Simple Cone Search** ed **ESA Gaia TAP Server** come provider primari ultra-resilienti, indipendenti dai server europei di Strasburgo/CDS.
+   - Estrazione dei modelli DSC (*Discrete Source Classifier*) per stimare con precisione la probabilità astrofisica (Star vs Galaxy vs Quasar).
+   - Raggio di tolleranza allargato e ordinamento ponderato per agganciare con precisione il centroide anche da click manuali.
+3. **Nuove Survey di Riferimento (Reference Sky Surveys: DSS, Pan-STARRS, Legacy Survey)**:
+   - Sottomenu dedicato con gestione separata e dissolvenza (Cross-Fade) su lastre DSS2, tasselli Pan-STARRS e **Legacy Survey (DECaLS / BASS / MzLS)**.
+   - Algoritmo a cascata intelligente: *ls-dr10* (`r`/`grz`) per Declinazioni $\le +32^\circ$ e fallback automatico su *ls-dr9-north* per il cielo settentrionale ($> +32^\circ$).
+   - Rilevamento automatico e scarto delle zone non coperte o con tile nere (es. piano galattico $|b| < 15^\circ$).
+4. **Resilienza e Mirror Failover Automatico per Vizier**:
+   - Monitoraggio continuo dello stato dei mirror mondiali (Harvard, Cambridge, Tokyo, Strasburgo).
+   - Failover automatico trasparente allo specchio funzionante con persistenza automatica della preferenza in `settings.json`.
+5. **Splash Screen Dinamico all'Avvio**:
+   - Schermata di caricamento rapida e fluida con icona dell'applicazione e barra di avanzamento, con ottimizzazione dei tempi di import dei moduli pesanti (lazy loading).
 
 ---
 
@@ -26,33 +38,44 @@ La versione **1.1.0** introduce importanti implementazioni rispetto alla precede
 * **Filtro di Pulizia (Denoise/Smooth)**: Slider dedicato per applicare un filtro kernel gaussiano dinamico per ammorbidire il rumore di fondo dell'immagine.
 * **Autostretch ed Curve di Livello**: Stretching logaritmico automatico (basato sulla deviazione standard mediana) per immagini grezze non stirate.
 * **Campionamento del Colore**: Calibrazione interattiva sul nero (fondo cielo) e sul bianco (stelle calde) selezionando direttamente i pixel di riferimento a schermo.
+* **Rimozione Gradienti**: Strumento di sottrazione e correzione del gradiente di luminosità dello sfondo cielo per uniformare il campo dell'immagine.
 
 ### 2. Marcatura Oggetti Celesti ed Annotazioni
 * **Annotazioni Personalizzate**: Clicca su qualsiasi oggetto per posizionare un mirino di precisione (aperto al centro) inserendo note di testo personalizzate.
 * **Integrazione coordinate J2000**: Il programma calcola e allega automaticamente le coordinate celesti RA/Dec J2000 al testo dell'annotazione.
 * **Tracciamento Asteroidi**: Interroga in automatico il database IMCCE SkyBoT per visualizzare con **rombi arancioni** la posizione degli asteroidi con $Mag < 21$ presenti nell'inquadratura al momento dello scatto.
+* **Ricerca Transienti (TNS)**: Interrogazione diretta del Transient Name Server per contrassegnare novae e supernovae con marker e note ad alta visibilità.
 
-### 3. Fotometria e Calcolo della Magnitudine (Flusso di Lavoro Separato)
+### 3. Fotometria e Calcolo della Magnitudine
 * **Separazione tra Calibrazione e Misura**:
-  * **Mark Calib Stars**: Permette di marcare e aggiungere le stelle di calibrazione stabili (cerchi azzurri) escludendo le stelle variabili. Cliccando una stella già inserita, questa viene deselezionata/rimossa (comportamento Toggle).
-  * **Measure Target**: Permette di calcolare la magnitudine di qualsiasi stella (incluse le variabili e quelle del catalogo).
-* **Calibrazione Automatica**: Suggerimento immediato tramite MessageBox per avviare l'**Auto-Calibrazione fotometrica** subito dopo il download del catalogo.
+  * **Mark Calib Stars**: Permette di marcare e aggiungere le stelle di calibrazione stabili (cerchi azzurri) escludendo le stelle variabili. Cliccando una stella già inserita, questa viene rimossa (toggle).
+  * **Measure Target**: Permette di calcolare la magnitudine di qualsiasi stella o sorgente debole.
+* **Stima della Magnitudine Limite**: Calcolo algoritmico della sensibilità massima e della magnitudine limite raggiunta dal singolo scatto.
 * **Interpolazione del Colore (FIT a Colori)**: Nei FIT RGB, il programma misura il flusso nei canali Rosso e Blu per ricavare l'indice di colore strumentale:
   $$CI_{\text{str}} = -2.5 \log_{10}(F_B / F_R)$$
-  Utilizza le stelle di calibrazione per interpolare la retta strumentale ed estrarre silenziosamente e con massima precisione la magnitudine fisica reale di transitori (senza aprire popup per stelle note del catalogo).
-* **Classificazione Probabilistica del Target**: Mostra nel pop-up dei risultati la stima percentuale del tipo di stella misurata in base al colore calcolato (*Nova, Supernova tipo Ia, Asteroide/Nana Gialla, Nana Rossa, Stella Gigante Blu*).
+  Utilizza le stelle di calibrazione per stimare con massima precisione la magnitudine fisica reale di transitori ed oggetti sconosciuti.
+* **Classificazione Probabilistica del Target**: Stima percentuale della tipologia di oggetto in base all'indice di colore (*Nova, Supernova Ia, Asteroide, Nana Rossa, Gigante Blu*).
 
-### 4. Confronto con Immagini DSS (con Fade)
-* **DSS Reference Sky Overlay**: Scarica in background e memorizza in cache le lastre reali DSS2 (red plate) da STScI.
-* **Fade Slider**: Permette di sfumare in tempo reale (Cross-Fade) tra la tua foto calde e l'immagine reale del cielo DSS perfettamente allineata tramite WCS.
+### 4. Survey Celesti di Confronto (DSS, Pan-STARRS, Legacy Survey)
+* **Survey Multiple**: Download in background e cache locale per lastre DSS2, skycell Pan-STARRS e tasselli FITS Legacy Survey (DR10 / DR9).
+* **Fade Slider**: Slider di opacità in tempo reale (Cross-Fade) tra la tua foto astronomica e la survey ufficiale perfettamente allineata tramite modello astrometrico WCS.
 
 ### 5. Plate Solving e Riscrittura Coordinate WCS
-* **Plate Solving Multiplo**: Supporta la risoluzione tramite astrometri locali/Vizier (astroalign) o tramite il risolutore online di **Nova.astrometry.net**.
+* **Plate Solving Flessibile**: Supporta la risoluzione tramite astrometri locali/Vizier (astroalign) o tramite il risolutore online di **Nova.astrometry.net**.
 * **Salvataggio WCS**: Riscrive le coordinate risolte direttamente nell'intestazione (Header) del file FITS originale senza perdita di dati.
+* **Supporto Immagini Standard (TIFF/PNG/JPG)**: Caricamento e persistenza automatica del WCS e delle annotazioni tramite file sidecar JSON (`.info.json`).
 
-### 6. Ricerca Stella su GAIA (Gaia Search Mode)
-* **Gaia Star Search Mode**: Cliccando su una stella in questa modalità, interroga il catalogo GAIA DR3 per ricavare magnitudine, moto proprio, parallasse e indice di colore.
-* **Riferimenti Grafici ed Aladin Lite**: Evidenzia il bersaglio cliccato con un **quadrato verde** e la coordinata esatta restituita da Gaia con una **X rossa**, fornendo un link interattivo cliccabile per aprire l'area su **Aladin Lite** (mappa celeste interattiva nel browser).
+### 6. Modalità Gaia & NED Object Search
+* **Analisi Astrofisica Completa**: Cliccando su qualsiasi oggetto in questa modalità, l'applicazione interroga simultaneamente Gaia DR3 e NASA NED, fornendo:
+  - Coordinate RA/Dec J2000 esatte, magnitudini $G, BP, RP$, indice di colore $BP-RP$.
+  - Parallasse, distanza in anni luce e parsec, moto proprio su entrambi gli assi, velocità radiale.
+  - Temperatura effettiva $T_{\text{eff}}$ e classe spettrale stellare (Classi O, B, A, F, G, K, M).
+  - Classificazione astrofisica Stella vs Galassia (probabilità Gaia DSC + cross-match NED con redshift $z$).
+* **Feedback Grafico Triplo**:
+  - **Quadratino Verde**: punto cliccato manualmente.
+  - **Croce Rossa ("Gaia Star")**: centroide esatto della stella Gaia.
+  - **Cerchietto Azzurro ("NED")**: posizione reale della galassia confermata.
+* **Link Diretti Cliccabili**: Collegamenti rapidi ai portali ufficiali **SIMBAD**, **NASA NED** e **Legacy Survey Sky Viewer**.
 
 ---
 
@@ -91,34 +114,45 @@ Una volta scaricato lo ZIP:
 * **Color Balance & Levels (Post-Stretched)**: Real-time adjustments of *Red Shift*, *Green Shift*, *Blue Shift*, *Brightness*, and *Contrast* to calibrate colors and enhance faint details.
 * **Cleaning Filter (Denoise/Smooth)**: Dedicated slider to apply a dynamic Gaussian kernel filter to smooth background noise.
 * **Autostretch & Histogram Curve**: Automatic logarithmic stretching (based on median absolute deviation) for raw unstretched images.
-* **Color Sampling**: Interactive black level (sky background) and white level (hot white stars) calibration directly on screen.
+* **Color Sampling**: Interactive black level (sky background) and white level (hot stars) calibration directly on screen.
+* **Gradient Removal**: Background gradient estimation and subtraction tool to flatten uneven sky background.
 
 ### 2. Celestial Object Marking & Annotations
 * **Custom Annotations**: Click any object to place a precision crosshair (open in the center) and add customized notes.
 * **J2000 Coordinates**: Automatically converts pixel coordinates using the WCS model and appends the J2000 RA/Dec string to the annotation.
 * **Asteroid Tracking**: Automatically queries the IMCCE SkyBoT database to draw **orange diamonds** at the positions of asteroids with $Mag < 21$ in the viewport.
+* **Transient Search (TNS)**: Directly queries the Transient Name Server to locate and highlight novae and supernovae.
 
-### 3. Photometry & Magnitude Calculation (Split Workflow)
+### 3. Photometry & Magnitude Calculation
 * **Calibration vs. Measurement separation**:
-  * **Mark Calib Stars**: Marks and adds calibration stars (cyan circles) while ignoring variables. Clicking an already selected star deselects/removes it (toggling behavior).
-  * **Measure Target**: Calculates the magnitude of any clicked star (including variables and catalog stars).
-* **Auto-Calibration Prompt**: Shows a quick pop-up after downloading catalog stars to immediately trigger the automated zero-point calibration.
-* **Instrumental Color Index Interpolation (Color FITS)**: For RGB FITS, the program measures the Red and Blue fluxes to calculate:
+  * **Mark Calib Stars**: Marks and adds calibration stars (cyan circles) while ignoring variables (toggling behavior).
+  * **Measure Target**: Calculates the magnitude of any clicked star or transient source.
+* **Limiting Magnitude Estimation**: Automated detection of the maximum depth and sensitivity reached in the frame.
+* **Instrumental Color Index Interpolation (Color FITS)**: For RGB FITS, the program measures the Red and Blue fluxes:
   $$CI_{\text{instr}} = -2.5 \log_{10}(F_B / F_R)$$
-  It uses the calibration stars to fit a color correction line and estimate the physical magnitude of unknown transients silently (no dialog shown for known catalog stars).
-* **Target Classification Likelihood**: Estimates and displays the probability percentage of the object type (*Nova, Supernova Ia, Asteroid/Yellow Dwarf, Red Dwarf, Blue Giant*) based on its calculated color index.
+  Fits a calibration line using reference stars to determine real physical magnitudes.
+* **Target Classification Likelihood**: Probabilistic classification based on measured color index (*Nova, Supernova Ia, Asteroid, Red Dwarf, Blue Giant*).
 
-### 4. DSS Comparison with Cross-Fade
-* **DSS Reference Sky Overlay**: Downloads and caches DSS2 plates from STScI in background.
-* **Fade Slider**: Real-time opacity slider (Cross-Fade) between your calibrated image and the reference DSS sky, aligned using WCS.
+### 4. Reference Sky Surveys (DSS, Pan-STARRS, Legacy Survey)
+* **Multiple Surveys**: Background downloading and caching of DSS2 red plates, Pan-STARRS skycells, and Legacy Survey tiles (DR10 / DR9).
+* **Fade Slider**: Real-time opacity slider (Cross-Fade) between your image and reference surveys aligned via WCS.
 
 ### 5. Plate Solving & WCS Header Writing
 * **Multiple Solvers**: Supports plate solving via local/Vizier catalogs (astroalign) or online via **Nova.astrometry.net**.
-* **WCS Save**: Saves solved coordinate systems back into the FITS headers of the original file.
+* **WCS Header Save**: Saves solved coordinate systems back into the FITS headers of the original file.
+* **Standard Images Support (TIFF/PNG/JPG)**: Automatic persistence of WCS and annotations via sidecar JSON files (`.info.json`).
 
-### 6. Gaia Query (Gaia Search Mode)
-* **Gaia Star Search Mode**: Clicking on a star queries the GAIA DR3 database to get magnitude, parallax, proper motion, and colors.
-* **Green Box, Red X & Aladin Lite**: Draws a **green square** around the click target, a **red X** at the exact Gaia catalog coordinate, and provides a clickable link to open the area in **Aladin Lite** (interactive web sky map).
+### 6. Gaia DR3 & NASA NED Object Search Mode
+* **Multi-Catalog Astrophysical Inspection**: Single-click query querying Gaia DR3 and NASA/IPAC NED simultaneously:
+  - Exact J2000 coordinates, $G, BP, RP$ magnitudes, $BP-RP$ color index.
+  - Parallax, distance in parsecs and light-years, proper motion, radial velocity.
+  - Effective temperature $T_{\text{eff}}$ and stellar spectral class (O, B, A, F, G, K, M).
+  - Star vs Galaxy classification (Gaia DSC model probabilities + NED confirmation with redshift $z$ and radial velocity $cz$).
+* **Triple Visual Markers**:
+  - **Green Box**: manual click position.
+  - **Red X ("Gaia Star")**: Gaia star centroid.
+  - **Cyan Circle ("NED")**: confirmed extragalactic galaxy position.
+* **Direct Official Links**: One-click links to **SIMBAD**, **NASA NED**, and **Legacy Survey Interactive Viewer**.
 
 ---
 
