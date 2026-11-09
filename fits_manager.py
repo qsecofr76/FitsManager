@@ -5173,59 +5173,98 @@ class FitsManagerApp:
                 pixel_scale_deg = (pixel_size / focal_length) * (206.265 / 3600.0)
                 log_msg(f"[INFO] Calculated scale: {pixel_scale_deg*3600.0:.3f} arcsec/pixel")
                 
-                log_msg(f"[QUERY] Querying Vizier Gaia DR3 (Radius: {radius_arcmin} arcmin)...")
-                c_val = f"{ra_deg:.6f} {dec_deg:.6f}".replace(',', '.')
-                c_str = urllib.parse.quote(c_val)
-                
-                ssl_context = ssl._create_unverified_context()
-                hosts = self.get_vizier_hosts()
-                lines = []
-                working_host = None
-                for host in hosts:
-                    url = f"https://{host}/viz-bin/asu-tsv?-source=I/355/gaiadr3&-c={c_str}&-c.r={radius_arcmin:f}&-c.u=arcmin&-out.form=|&-out.add=RA_ICRS,DE_ICRS&-out=Gmag&-sort=Gmag&-out.max=500"
-                    req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-                    log_msg(f"[QUERY] Querying Vizier Gaia DR3 on mirror {host} (Radius: {radius_arcmin} arcmin)...")
-                    try:
-                        with urllib.request.urlopen(req, timeout=8, context=ssl_context) as response:
-                            lines = response.read().decode('utf-8').split('\n')
-                        if len(lines) > 20:
-                            working_host = host
-                            self.set_vizier_preferred_host(host)
-                            log_msg(f"[SUCCESS] Received {len(lines)} lines from mirror {host}")
-                            break
-                    except Exception as ex:
-                        log_msg(f"[WARN] Mirror {host} failed: {ex}")
-
-                if not lines or not working_host:
-                    raise Exception("All Vizier mirrors failed to respond. Check your connection.")
-                
-                header_found = False
-                cols = {}
+                log_msg(f"[QUERY] Querying Gaia DR3 (Radius: {radius_arcmin} arcmin)...")
                 catalog_stars = []
-                for line in lines:
-                    line = line.strip()
-                    if not line or line.startswith("#"):
-                        continue
-                    parts = line.split('|')
-                    if not header_found:
-                        if any("RA" in p or "coord" in p or "_RAJ" in p for p in parts):
-                            header_found = True
-                            cols = {p.strip(): i for i, p in enumerate(parts)}
-                        continue
-                    if line.startswith("-"):
-                        continue
-                    if len(parts) >= 3:
+                ssl_context = ssl._create_unverified_context()
+                
+                # 1. Primary engine: Official ESA Gaia TAP Server
+                try:
+                    import json
+                    r_deg = float(radius_arcmin) / 60.0
+                    adql = f"""
+                    SELECT TOP 300
+                        source_id, ra, dec, phot_g_mean_mag
+                    FROM gaiadr3.gaia_source
+                    WHERE 1=CONTAINS(
+                        POINT('ICRS', ra, dec),
+                        CIRCLE('ICRS', {ra_deg:.7f}, {dec_deg:.7f}, {r_deg:.7f})
+                    )
+                    ORDER BY phot_g_mean_mag ASC
+                    """
+                    esa_params = urllib.parse.urlencode({
+                        'REQUEST': 'doQuery',
+                        'LANG': 'ADQL',
+                        'FORMAT': 'json',
+                        'QUERY': adql
+                    })
+                    esa_url = f"https://gea.esac.esa.int/tap-server/tap/sync?{esa_params}"
+                    log_msg("[QUERY] Querying official ESA Gaia TAP Server...")
+                    req_esa = urllib.request.Request(esa_url, headers={'User-Agent': 'Mozilla/5.0'})
+                    with urllib.request.urlopen(req_esa, timeout=12, context=ssl_context) as resp:
+                        res_json = json.loads(resp.read().decode('utf-8'))
+                        for row in res_json.get('data', []):
+                            try:
+                                s_ra = float(row[1])
+                                s_dec = float(row[2])
+                                s_mag = float(row[3]) if row[3] is not None else 15.0
+                                catalog_stars.append({'ra': s_ra, 'dec': s_dec, 'mag': s_mag})
+                            except Exception:
+                                pass
+                        if len(catalog_stars) > 20:
+                            log_msg(f"[SUCCESS] Retrieved {len(catalog_stars)} stars from official ESA Gaia Archive!")
+                except Exception as esa_err:
+                    log_msg(f"[WARN] ESA TAP query failed ({esa_err}). Trying fallback Vizier mirrors...")
+
+                # 2. Fallback engine: Vizier mirrors
+                if not catalog_stars:
+                    c_val = f"{ra_deg:.6f} {dec_deg:.6f}".replace(',', '.')
+                    c_str = urllib.parse.quote(c_val)
+                    hosts = self.get_vizier_hosts()
+                    lines = []
+                    for host in hosts:
+                        url = f"https://{host}/viz-bin/asu-tsv?-source=I/355/gaiadr3&-c={c_str}&-c.r={radius_arcmin:f}&-c.u=arcmin&-out.form=|&-out.add=RA_ICRS,DE_ICRS&-out=Gmag&-sort=Gmag&-out.max=500"
+                        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+                        log_msg(f"[QUERY] Querying Vizier Gaia DR3 on mirror {host} (Radius: {radius_arcmin} arcmin)...")
                         try:
-                            ra_idx = cols.get("RA_ICRS", cols.get("_RA_ICRS", 0))
-                            dec_idx = cols.get("DE_ICRS", cols.get("_DE_ICRS", 1))
-                            mag_idx = cols.get("Gmag", 2)
-                            
-                            ra_s = float(parts[ra_idx])
-                            dec_s = float(parts[dec_idx])
-                            mag_s = float(parts[mag_idx])
-                            catalog_stars.append({'ra': ra_s, 'dec': dec_s, 'mag': mag_s})
-                        except Exception:
-                            continue
+                            with urllib.request.urlopen(req, timeout=8, context=ssl_context) as response:
+                                lines = response.read().decode('utf-8').split('\n')
+                            if len(lines) > 20 and not any("no connection" in l for l in lines[:20]):
+                                self.set_vizier_preferred_host(host)
+                                log_msg(f"[SUCCESS] Received {len(lines)} lines from mirror {host}")
+                                break
+                        except Exception as ex:
+                            log_msg(f"[WARN] Mirror {host} failed: {ex}")
+
+                    if lines:
+                        header_found = False
+                        cols = {}
+                        for line in lines:
+                            line = line.strip()
+                            if not line or line.startswith("#"):
+                                continue
+                            parts = line.split('|')
+                            if not header_found:
+                                if any("RA" in p or "coord" in p or "_RAJ" in p for p in parts):
+                                    header_found = True
+                                    cols = {p.strip(): i for i, p in enumerate(parts)}
+                                continue
+                            if line.startswith("-"):
+                                continue
+                            if len(parts) >= 3:
+                                try:
+                                    ra_idx = cols.get("RA_ICRS", cols.get("_RA_ICRS", 0))
+                                    dec_idx = cols.get("DE_ICRS", cols.get("_DE_ICRS", 1))
+                                    mag_idx = cols.get("Gmag", 2)
+                                    
+                                    ra_s = float(parts[ra_idx])
+                                    dec_s = float(parts[dec_idx])
+                                    mag_s = float(parts[mag_idx])
+                                    catalog_stars.append({'ra': ra_s, 'dec': dec_s, 'mag': mag_s})
+                                except Exception:
+                                    continue
+
+                if len(catalog_stars) < 10:
+                    raise Exception("Failed to retrieve stars from ESA Gaia Archive and Vizier mirrors.")
                             
                 catalog_stars = sorted(catalog_stars, key=lambda s: s['mag'])[:150]
                 log_msg(f"[INFO] Fetched {len(catalog_stars)} Gaia catalog stars.")
@@ -6180,55 +6219,103 @@ class FitsManagerApp:
                 radius_arcmin = 0.16667 # 10 arcseconds
                 cols = "Source,RA_ICRS,DE_ICRS,Plx,e_Plx,pmRA,pmDE,Gmag,BPmag,RPmag,RV,Teff,phot_variable_flag"
                 ssl_context = ssl._create_unverified_context()
-                hosts = self.get_vizier_hosts()
-                content = ""
-                working_host = None
-
-                for host in hosts:
-                    url = f"https://{host}/viz-bin/asu-tsv?-source=I/355/gaiadr3&-c={c_str}&-c.r={radius_arcmin:f}&-c.u=arcmin&-out.form=|&-out.max=1&-out={cols}"
-                    req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-                    try:
-                        with urllib.request.urlopen(req, timeout=8, context=ssl_context) as response:
-                            content = response.read().decode('utf-8')
-                        if len(content) > 50:
-                            working_host = host
-                            self.set_vizier_preferred_host(host)
-                            break
-                    except Exception:
-                        continue
-                        
-                lines = content.split('\n')
-                data_line = None
-                header_line = None
+                star_data = None
                 
-                for line in lines:
-                    if line.startswith("#"):
-                        continue
-                    if line.strip() == "":
-                        continue
-                    if "Source" in line and "RA_ICRS" in line:
-                        header_line = line.strip()
-                        continue
-                    if line.startswith("-"):
-                        continue
+                # 1. Primary engine: Official ESA Gaia TAP Server (fast, highly available, unaffected by CDS outages)
+                try:
+                    import json
+                    radius_deg = 10.0 / 3600.0  # 10 arcseconds
+                    adql = f"""
+                    SELECT TOP 1
+                        source_id, ra, dec, parallax, parallax_error, pmra, pmdec,
+                        phot_g_mean_mag, phot_bp_mean_mag, phot_rp_mean_mag,
+                        radial_velocity, teff_gspphot, phot_variable_flag
+                    FROM gaiadr3.gaia_source
+                    WHERE 1=CONTAINS(
+                        POINT('ICRS', ra, dec),
+                        CIRCLE('ICRS', {ra_deg:.7f}, {dec_deg:.7f}, {radius_deg:.7f})
+                    )
+                    ORDER BY phot_g_mean_mag ASC
+                    """
+                    esa_params = urllib.parse.urlencode({
+                        'REQUEST': 'doQuery',
+                        'LANG': 'ADQL',
+                        'FORMAT': 'json',
+                        'QUERY': adql
+                    })
+                    esa_url = f"https://gea.esac.esa.int/tap-server/tap/sync?{esa_params}"
+                    req_esa = urllib.request.Request(esa_url, headers={'User-Agent': 'Mozilla/5.0'})
+                    with urllib.request.urlopen(req_esa, timeout=8, context=ssl_context) as resp:
+                        res_json = json.loads(resp.read().decode('utf-8'))
+                        rows = res_json.get('data', [])
+                        if rows:
+                            r0 = rows[0]
+                            star_data = {
+                                'Source': str(r0[0]) if r0[0] is not None else '',
+                                'RA_ICRS': str(r0[1]) if r0[1] is not None else '',
+                                'DE_ICRS': str(r0[2]) if r0[2] is not None else '',
+                                'Plx': str(r0[3]) if r0[3] is not None else '',
+                                'e_Plx': str(r0[4]) if r0[4] is not None else '',
+                                'pmRA': str(r0[5]) if r0[5] is not None else '',
+                                'pmDE': str(r0[6]) if r0[6] is not None else '',
+                                'Gmag': str(r0[7]) if r0[7] is not None else '',
+                                'BPmag': str(r0[8]) if r0[8] is not None else '',
+                                'RPmag': str(r0[9]) if r0[9] is not None else '',
+                                'RV': str(r0[10]) if r0[10] is not None else '',
+                                'Teff': str(r0[11]) if r0[11] is not None else '',
+                                'phot_variable_flag': str(r0[12]) if r0[12] is not None else ''
+                            }
+                except Exception as esa_err:
+                    pass
                     
-                    # Ensure this is a real data line by checking that the first part is a Source ID (integer digits)
-                    parts = line.strip().split('|')
-                    if len(parts) > 0 and parts[0].strip().isdigit():
-                        data_line = line.strip()
-                        break
+                # 2. Fallback engine: Vizier mirrors (if ESA server fails or times out)
+                if not star_data:
+                    hosts = self.get_vizier_hosts()
+                    content = ""
+                    for host in hosts:
+                        url = f"https://{host}/viz-bin/asu-tsv?-source=I/355/gaiadr3&-c={c_str}&-c.r={radius_arcmin:f}&-c.u=arcmin&-out.form=|&-out.max=1&-out={cols}"
+                        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+                        try:
+                            with urllib.request.urlopen(req, timeout=8, context=ssl_context) as response:
+                                content = response.read().decode('utf-8')
+                            if "Error" not in content and "no connection" not in content and len(content) > 50:
+                                self.set_vizier_preferred_host(host)
+                                break
+                        except Exception:
+                            continue
+                            
+                    lines = content.split('\n')
+                    data_line = None
+                    header_line = None
                     
-                if not data_line:
+                    for line in lines:
+                        if line.startswith("#"):
+                            continue
+                        if line.strip() == "":
+                            continue
+                        if "Source" in line and "RA_ICRS" in line:
+                            header_line = line.strip()
+                            continue
+                        if line.startswith("-"):
+                            continue
+                        
+                        parts = line.strip().split('|')
+                        if len(parts) > 0 and parts[0].strip().isdigit():
+                            data_line = line.strip()
+                            break
+                        
+                    if data_line and header_line:
+                        headers = [h.strip() for h in header_line.split('|')]
+                        values = [v.strip() for v in data_line.split('|')]
+                        star_data = dict(zip(headers, values))
+                    
+                if not star_data:
                     def _show_no_star():
                         lbl_loading.pack_forget()
                         lbl_err = tk.Label(info_win, text="No Gaia DR3 star found near this coordinate\n(within 10 arcseconds radius).", bg=self.panel_color, fg="#facc15", font=("Segoe UI", 11, "bold"))
                         lbl_err.pack(pady=100)
                     info_win.after(0, _show_no_star)
                     return
-                    
-                headers = [h.strip() for h in header_line.split('|')]
-                values = [v.strip() for v in data_line.split('|')]
-                star_data = dict(zip(headers, values))
                 
                 cat_ra = ra_deg
                 cat_dec = dec_deg
